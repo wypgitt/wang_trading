@@ -195,13 +195,19 @@ class TIBConstructor(BaseBarConstructor):
         self._expected_imbalance = initial_threshold
         self._cumulative_theta = 0.0  # running signed tick sum
 
-        # Track expected bar length for threshold calibration
+        # AFML formula: threshold = E[T] * |2*P(b_t=1) - 1|
+        # Initialize _expected_buy_prob=1.0 so the formula reproduces
+        # initial_threshold on the first bar (E[T] * |2*1 - 1| = E[T]).
         self._expected_ticks = initial_threshold  # E[T]
+        self._expected_buy_prob = 1.0             # P(b_t=1)
         self._bar_tick_counts: deque[int] = deque(maxlen=ewma_span)
-        self._bar_imbalances: deque[float] = deque(maxlen=ewma_span)
 
     def _is_bar_complete(self, tick: Tick) -> bool:
-        # Update cumulative imbalance with signed tick (+1 buy, -1 sell)
+        # Base class must classify before calling here
+        if tick.side == Side.UNKNOWN:
+            raise ValueError(
+                f"Unclassified tick reached TIBConstructor._is_bar_complete: {tick}"
+            )
         sign = 1.0 if tick.side == Side.BUY else -1.0
         self._cumulative_theta += sign
 
@@ -213,33 +219,27 @@ class TIBConstructor(BaseBarConstructor):
         return abs(self._cumulative_theta) >= self._expected_imbalance
 
     def _on_bar_complete(self, bar: Bar) -> None:
-        """Update EWMA threshold after bar completion."""
-        # Record this bar's stats
+        """Update EWMA threshold using AFML formula after bar completion."""
         self._bar_tick_counts.append(bar.tick_count)
-        abs_imbalance = abs(self._cumulative_theta)
-        self._bar_imbalances.append(abs_imbalance)
 
-        # Update expected ticks per bar (EWMA)
+        # Update E[T]: EWMA of ticks per bar
         self._expected_ticks = (
             self._alpha * bar.tick_count
             + (1 - self._alpha) * self._expected_ticks
         )
 
-        # Update expected imbalance (EWMA of |imbalance| at trigger)
-        # The threshold is E[T] * E[|imbalance per tick|]
-        if len(self._bar_imbalances) > 1:
-            avg_imb_per_tick = abs_imbalance / max(bar.tick_count, 1)
-            expected_imb_per_tick = (
-                self._alpha * avg_imb_per_tick
-                + (1 - self._alpha) * (self._expected_imbalance / max(self._expected_ticks, 1))
-            )
-            self._expected_imbalance = self._expected_ticks * expected_imb_per_tick
-        else:
-            # Not enough data yet, use simple EWMA of imbalance
-            self._expected_imbalance = (
-                self._alpha * abs_imbalance
-                + (1 - self._alpha) * self._expected_imbalance
-            )
+        # Update P(b_t=1): EWMA of observed buy-tick proportion
+        # Tracked independently so the formula isn't circular.
+        buy_prob = bar.buy_ticks / max(bar.tick_count, 1)
+        self._expected_buy_prob = (
+            self._alpha * buy_prob
+            + (1 - self._alpha) * self._expected_buy_prob
+        )
+
+        # AFML Ch. 2.4: threshold = E[T] * |2*P(b_t=1) - 1|
+        self._expected_imbalance = (
+            self._expected_ticks * abs(2 * self._expected_buy_prob - 1)
+        )
 
         # Enforce minimum threshold to prevent degenerate 1-tick bars
         self._expected_imbalance = max(self._expected_imbalance, 5.0)
@@ -250,8 +250,8 @@ class TIBConstructor(BaseBarConstructor):
     def reset(self) -> None:
         super().reset()
         self._cumulative_theta = 0.0
+        self._expected_buy_prob = 1.0
         self._bar_tick_counts.clear()
-        self._bar_imbalances.clear()
 
 
 class VIBConstructor(BaseBarConstructor):
@@ -279,9 +279,19 @@ class VIBConstructor(BaseBarConstructor):
         self._alpha = 2.0 / (ewma_span + 1)
         self._expected_imbalance = initial_threshold
         self._cumulative_theta = 0.0
-        self._bar_imbalances: deque[float] = deque(maxlen=ewma_span)
+
+        # AFML formula: threshold = E[V] * |2*P(v_t=buy) - 1|
+        # Initialize _expected_buy_vol_prop=1.0 so formula reproduces
+        # initial_threshold on the first bar (E[V] * |2*1 - 1| = E[V]).
+        self._expected_vol_per_bar = initial_threshold   # E[V]
+        self._expected_buy_vol_prop = 1.0                # P(v_t=buy)
 
     def _is_bar_complete(self, tick: Tick) -> bool:
+        # Base class must classify before calling here
+        if tick.side == Side.UNKNOWN:
+            raise ValueError(
+                f"Unclassified tick reached VIBConstructor._is_bar_complete: {tick}"
+            )
         sign = 1.0 if tick.side == Side.BUY else -1.0
         self._cumulative_theta += sign * tick.volume
 
@@ -291,12 +301,23 @@ class VIBConstructor(BaseBarConstructor):
         return abs(self._cumulative_theta) >= self._expected_imbalance
 
     def _on_bar_complete(self, bar: Bar) -> None:
-        abs_imbalance = abs(self._cumulative_theta)
-        self._bar_imbalances.append(abs_imbalance)
+        # Update E[V]: EWMA of total volume per bar
+        self._expected_vol_per_bar = (
+            self._alpha * bar.volume
+            + (1 - self._alpha) * self._expected_vol_per_bar
+        )
 
+        # Update P(v_t=buy): EWMA of observed volume-weighted buy proportion
+        # Tracked independently so the formula isn't circular.
+        buy_vol_prop = bar.buy_volume / max(bar.volume, 1e-9)
+        self._expected_buy_vol_prop = (
+            self._alpha * buy_vol_prop
+            + (1 - self._alpha) * self._expected_buy_vol_prop
+        )
+
+        # AFML Ch. 2.4: threshold = E[V] * |2*P(v_t=buy) - 1|
         self._expected_imbalance = (
-            self._alpha * abs_imbalance
-            + (1 - self._alpha) * self._expected_imbalance
+            self._expected_vol_per_bar * abs(2 * self._expected_buy_vol_prop - 1)
         )
         self._expected_imbalance = max(self._expected_imbalance, 100.0)
         self._cumulative_theta = 0.0
@@ -304,7 +325,7 @@ class VIBConstructor(BaseBarConstructor):
     def reset(self) -> None:
         super().reset()
         self._cumulative_theta = 0.0
-        self._bar_imbalances.clear()
+        self._expected_buy_vol_prop = 1.0
 
 
 # ── Factory ──

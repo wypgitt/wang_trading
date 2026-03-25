@@ -7,8 +7,10 @@ as it flows through the pipeline: Tick → Bar → Feature → Signal → Order.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime
+import math
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
@@ -104,7 +106,6 @@ class Bar:
     @property
     def log_returns(self) -> float:
         """Log bar return."""
-        import math
         if self.open <= 0 or self.close <= 0:
             return 0.0
         return math.log(self.close / self.open)
@@ -183,8 +184,8 @@ class BarAccumulator:
             duration = (self.last_timestamp - self.open_time).total_seconds()
 
         return Bar(
-            timestamp=self.last_timestamp or datetime.now(),
-            open_time=self.open_time or datetime.now(),
+            timestamp=self.last_timestamp or datetime.now(timezone.utc),
+            open_time=self.open_time or datetime.now(timezone.utc),
             symbol=self.symbol,
             bar_type=self.bar_type,
             open=self.open,
@@ -221,3 +222,4 @@ class BarAccumulator:
         self.cumulative_imbalance = 0.0
         self.vwap_numerator = 0.0
         self.last_timestamp = None
+        self.threshold = 0.0

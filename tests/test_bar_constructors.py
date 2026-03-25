@@ -193,19 +193,26 @@ class TestTIBConstructor:
         assert len(bars) <= 2
 
     def test_threshold_adapts(self):
-        constructor = TIBConstructor(symbol="TEST", initial_threshold=20.0, ewma_span=10)
+        """
+        AFML formula: threshold = E[T] * |2*P(b_t=1) - 1|.
+        With initial P(b_t=1)=1.0 (threshold=20), observing real bars where
+        P(b_t=1)=0.7 drives |2P-1| toward 0.4, so threshold moves away from 20.
+        """
+        constructor = TIBConstructor(symbol="TEST", initial_threshold=20.0, ewma_span=5)
         initial_threshold = constructor._expected_imbalance
 
-        # Generate a long trend (all buys) to produce many bars
-        ticks = make_ticks([100 + i * 0.1 for i in range(500)])
+        # Feed ticks with 70% explicit BUYs so P(b_t=1) ≈ 0.7 (not 1.0).
+        # The AFML formula will converge toward E[T] * 0.4, clearly != 20.0.
+        ticks = []
+        for i in range(500):
+            side = Side.BUY if i % 10 < 7 else Side.SELL
+            ticks.append(make_tick(100.0, ts_offset_ms=i * 100, side=side))
+
         bars = constructor.process_ticks(ticks)
 
-        # After producing multiple bars, threshold should have adapted
-        # from the initial value (it may go up or down depending on
-        # actual imbalance at trigger, but should differ from initial)
-        assert len(bars) > 5
-        # The threshold should have moved from initial as EWMA updates
-        assert constructor._expected_imbalance != initial_threshold or len(bars) > 10
+        assert len(bars) >= 3, "Need multiple bars to force EWMA adaptation"
+        # Threshold must have moved from initial 20.0 once P(b_t=1) != 1.0
+        assert constructor._expected_imbalance != initial_threshold
 
     def test_bar_metadata(self):
         constructor = TIBConstructor(symbol="TEST", initial_threshold=3.0)
@@ -216,6 +223,16 @@ class TestTIBConstructor:
             assert bar.bar_type == BarType.TICK_IMBALANCE
             assert bar.symbol == "TEST"
             assert bar.threshold > 0
+
+    def test_unknown_side_raises(self):
+        """Bug 5 fix: Side.UNKNOWN must never reach _is_bar_complete."""
+        # Base class process_tick() always classifies before calling _is_bar_complete,
+        # so Side.UNKNOWN gets resolved. Verify this contract holds.
+        constructor = TIBConstructor(symbol="TEST", initial_threshold=3.0)
+        # Directly call _is_bar_complete with UNKNOWN to confirm the guard fires.
+        unknown_tick = make_tick(100.0, side=Side.UNKNOWN)
+        with pytest.raises(ValueError, match="Unclassified tick"):
+            constructor._is_bar_complete(unknown_tick)
 
 
 # ── VIB Tests ──
@@ -296,6 +313,25 @@ class TestCUSUMFilter:
 
         threshold = compute_cusum_threshold(series, multiplier=1.5)
         assert threshold > 0
+
+    def test_no_duplicate_timestamps(self):
+        """Bug 2 fix: CUSUM filter must never emit the same timestamp twice."""
+        import pandas as pd
+
+        # Alternate sharp up/down swings to stress-test both branches
+        prices = [100.0]
+        for i in range(100):
+            if i % 2 == 0:
+                prices.append(prices[-1] * 1.05)
+            else:
+                prices.append(prices[-1] * 0.96)
+
+        series = pd.Series(
+            prices,
+            index=pd.date_range("2024-01-01", periods=len(prices), freq="h"),
+        )
+        events = cusum_filter(series, threshold=0.02)
+        assert len(events) == len(set(events)), "Duplicate timestamps in CUSUM output"
 
 
 # ── Bar Accumulator Tests ──

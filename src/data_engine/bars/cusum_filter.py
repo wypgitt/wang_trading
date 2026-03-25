@@ -54,8 +54,7 @@ def cusum_filter(
         if s_pos > threshold:
             events.append(dt)
             s_pos = 0.0  # reset after trigger
-
-        if s_neg < -threshold:
+        elif s_neg < -threshold:
             events.append(dt)
             s_neg = 0.0
 

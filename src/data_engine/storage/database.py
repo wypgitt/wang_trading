@@ -12,10 +12,7 @@ from typing import Optional
 
 import pandas as pd
 from loguru import logger
-from sqlalchemy import (
-    create_engine, text, Column, Float, Integer, String, DateTime, Enum,
-    MetaData, Table, Index,
-)
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from src.data_engine.models import Tick, Bar, BarType, Side
@@ -67,7 +64,7 @@ CREATE TABLE IF NOT EXISTS bars (
     imbalance         DOUBLE PRECISION DEFAULT 0,
     threshold         DOUBLE PRECISION DEFAULT 0,
     vwap              DOUBLE PRECISION DEFAULT 0,
-    bar_duration_secs DOUBLE PRECISION DEFAULT 0
+    bar_duration_seconds DOUBLE PRECISION DEFAULT 0
 );
 
 SELECT create_hypertable('bars', 'timestamp',
@@ -212,7 +209,7 @@ class DatabaseManager:
                 "imbalance": b.imbalance,
                 "threshold": b.threshold,
                 "vwap": b.vwap,
-                "bar_duration_secs": b.bar_duration_seconds,
+                "bar_duration_seconds": b.bar_duration_seconds,
             }
             for b in bars
         ]
@@ -223,11 +220,11 @@ class DatabaseManager:
                     INSERT INTO bars (timestamp, open_time, symbol, bar_type,
                         open, high, low, close, volume, dollar_volume, tick_count,
                         buy_volume, sell_volume, buy_ticks, sell_ticks,
-                        imbalance, threshold, vwap, bar_duration_secs)
+                        imbalance, threshold, vwap, bar_duration_seconds)
                     VALUES (:timestamp, :open_time, :symbol, :bar_type,
                         :open, :high, :low, :close, :volume, :dollar_volume, :tick_count,
                         :buy_volume, :sell_volume, :buy_ticks, :sell_ticks,
-                        :imbalance, :threshold, :vwap, :bar_duration_secs)
+                        :imbalance, :threshold, :vwap, :bar_duration_seconds)
                 """),
                 rows,
             )

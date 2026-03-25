@@ -6,6 +6,7 @@ Loads settings from YAML config file with environment variable interpolation.
 
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -193,11 +194,14 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
 
 # Singleton
 _settings: Optional[Settings] = None
+_settings_lock = threading.Lock()
 
 
 def get_settings() -> Settings:
-    """Get or create the global settings singleton."""
+    """Get or create the global settings singleton (thread-safe)."""
     global _settings
     if _settings is None:
-        _settings = load_settings()
+        with _settings_lock:
+            if _settings is None:
+                _settings = load_settings()
     return _settings

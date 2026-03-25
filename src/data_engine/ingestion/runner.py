@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import signal
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import click
@@ -114,7 +114,7 @@ class IngestionPipeline:
         Main streaming loop: connect, subscribe, process ticks.
         """
         self._running = True
-        self._start_time = datetime.utcnow()
+        self._start_time = datetime.now(timezone.utc)
         self.setup_constructors(symbols)
 
         logger.info(f"Starting ingestion for {len(symbols)} symbols...")
@@ -130,7 +130,7 @@ class IngestionPipeline:
 
                 # Periodic status
                 if self._tick_count % 10_000 == 0 and self._tick_count > 0:
-                    elapsed = (datetime.utcnow() - self._start_time).total_seconds()
+                    elapsed = (datetime.now(timezone.utc) - self._start_time).total_seconds()
                     rate = self._tick_count / elapsed if elapsed > 0 else 0
                     logger.info(
                         f"Ingestion stats: {self._tick_count:,} ticks, "
@@ -154,7 +154,7 @@ class IngestionPipeline:
         """
         Historical backfill: fetch historical ticks and construct bars.
         """
-        self._start_time = datetime.utcnow()
+        self._start_time = datetime.now(timezone.utc)
         self.setup_constructors([symbol])
 
         logger.info(f"Backfilling {symbol} from {start.date()} to {end.date()}...")
@@ -246,6 +246,10 @@ def _create_adapter(asset_class: str) -> BaseAdapter:
             secret_key=settings.data_sources.binance.secret_key,
             testnet=settings.data_sources.binance.testnet,
         )
+    elif asset_class == "futures":
+        raise NotImplementedError(
+            "IBKR adapter not yet implemented — coming in Phase 5"
+        )
     else:
         raise ValueError(f"Unsupported asset class: {asset_class}")
 
@@ -298,27 +302,38 @@ def main(
         asset_class=asset_class,
     )
 
-    # Handle graceful shutdown
-    def shutdown_handler(sig, frame):
-        logger.info(f"Received signal {sig}, shutting down...")
-        pipeline.stop()
+    async def _run_with_signals(coro) -> None:
+        """Wrap a coroutine with asyncio-native signal handlers."""
+        loop = asyncio.get_running_loop()
 
-    signal.signal(signal.SIGINT, shutdown_handler)
-    signal.signal(signal.SIGTERM, shutdown_handler)
+        def _stop(sig: signal.Signals) -> None:
+            logger.info(f"Received signal {sig.name}, shutting down...")
+            pipeline.stop()
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _stop, sig)
+
+        await coro
 
     if backfill:
         # Historical backfill mode
         if not symbol:
             symbol = _get_symbols(asset_class)[0]
 
-        end_dt = datetime.fromisoformat(end) if end else datetime.utcnow()
+        end_dt = datetime.fromisoformat(end) if end else datetime.now(timezone.utc)
         start_dt = datetime.fromisoformat(start) if start else end_dt - timedelta(days=days)
 
-        asyncio.run(pipeline.run_backfill(symbol, start_dt, end_dt))
+        try:
+            asyncio.run(_run_with_signals(pipeline.run_backfill(symbol, start_dt, end_dt)))
+        except KeyboardInterrupt:
+            pass
     else:
         # Live streaming mode
         symbols = _get_symbols(asset_class)
-        asyncio.run(pipeline.run_stream(symbols))
+        try:
+            asyncio.run(_run_with_signals(pipeline.run_stream(symbols)))
+        except KeyboardInterrupt:
+            pass
 
     db.close()
 

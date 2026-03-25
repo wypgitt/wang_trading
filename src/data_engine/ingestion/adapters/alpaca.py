@@ -84,6 +84,9 @@ class AlpacaAdapter(BaseAdapter):
                         raise ConnectionError(f"Alpaca auth failed: {item}")
                 break
 
+        if not self._connected:
+            raise ConnectionError("Alpaca auth: no valid response received")
+
     async def disconnect(self) -> None:
         """Disconnect from Alpaca."""
         if self._ws and not self._ws.closed:
