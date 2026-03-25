@@ -1,0 +1,104 @@
+# ============================================
+# Unified Quantitative Trading System
+# Configuration
+# ============================================
+# Copy to settings.yaml and fill in your keys.
+# NEVER commit settings.yaml to git.
+
+system:
+  name: "quant-system"
+  environment: "development"  # development | paper | live
+  log_level: "INFO"
+
+# ── Data Sources ──
+data_sources:
+  alpaca:
+    api_key: "${ALPACA_API_KEY}"
+    secret_key: "${ALPACA_SECRET_KEY}"
+    base_url: "https://paper-api.alpaca.markets"  # paper trading
+    data_url: "https://data.alpaca.markets"
+    feed: "iex"  # iex (free) or sip (paid)
+
+  polygon:
+    api_key: "${POLYGON_API_KEY}"
+    # Only needed if you want trade-level tick data beyond Alpaca
+
+  binance:
+    api_key: "${BINANCE_API_KEY}"
+    secret_key: "${BINANCE_SECRET_KEY}"
+    testnet: true
+
+  ibkr:
+    host: "127.0.0.1"
+    port: 7497  # paper: 7497, live: 7496
+    client_id: 1
+
+# ── Database ──
+database:
+  host: "localhost"
+  port: 5432
+  name: "quantsystem"
+  user: "quant"
+  password: "${DB_PASSWORD}"
+  # TimescaleDB hypertable settings
+  tick_chunk_interval: "1 day"
+  bar_chunk_interval: "7 days"
+
+# ── Feature Store ──
+feature_store:
+  backend: "parquet"  # parquet | gcs
+  local_path: "./data/features"
+  gcs_bucket: "${GCS_FEATURE_BUCKET}"
+
+# ── Bar Configuration ──
+bars:
+  # Default bar parameters per asset class
+  equities:
+    primary_type: "tib"  # tick imbalance bars
+    secondary_type: "dollar"
+    tick_bar_size: 500
+    volume_bar_size: 50000
+    dollar_bar_size: 1000000  # $1M
+    imbalance_ewma_span: 100  # bars for dynamic threshold
+
+  crypto:
+    primary_type: "tib"
+    secondary_type: "dollar"
+    tick_bar_size: 200
+    volume_bar_size: 10.0  # BTC
+    dollar_bar_size: 500000  # $500K
+    imbalance_ewma_span: 50
+
+  futures:
+    primary_type: "dollar"
+    secondary_type: "tib"
+    dollar_bar_size: 2000000  # $2M
+    imbalance_ewma_span: 100
+
+# ── Instruments ──
+instruments:
+  equities:
+    universe: "sp500"  # sp500 | custom
+    custom_symbols: []
+    # For Phase 1, start with a small test set:
+    test_symbols: ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM", "V", "SPY"]
+
+  crypto:
+    symbols: ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
+    exchanges: ["binance", "coinbase"]
+
+  futures:
+    symbols: ["ES", "NQ", "CL", "GC"]  # E-mini S&P, Nasdaq, Crude, Gold
+
+# ── Validation ──
+validation:
+  min_ticks_per_bar: 10
+  max_bar_duration_seconds: 86400  # 24h
+  outlier_std_threshold: 10.0  # flag ticks > 10 std from rolling mean
+  gap_threshold_seconds: 300  # alert if no ticks for 5 min during market hours
+
+# ── CUSUM Filter ──
+cusum:
+  threshold_multiplier: 1.5  # multiples of daily return std
+  min_events_per_day: 2
+  max_events_per_day: 50

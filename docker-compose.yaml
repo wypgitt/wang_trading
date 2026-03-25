@@ -1,0 +1,32 @@
+# Docker Compose for local development
+# Start: docker compose up -d
+# Stop:  docker compose down
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: quant-timescaledb
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: quantsystem
+      POSTGRES_USER: quant
+      POSTGRES_PASSWORD: password
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quant -d quantsystem"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: quant-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+volumes:
+  timescaledb_data:
