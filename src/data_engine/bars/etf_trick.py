@@ -68,10 +68,11 @@ class ETFTrick:
 
         units = etf_value / prices.loc[first_valid, current_contract]
 
+        roll_dates_set = set(roll_dates)
         for dt in prices.index:
             # Check if we should roll
             if (
-                dt in roll_dates
+                dt in roll_dates_set
                 and current_contract_idx + 1 < len(contracts)
             ):
                 # Value at roll = units * price of old contract at roll date
