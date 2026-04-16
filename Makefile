@@ -49,6 +49,20 @@ validate: ## Validate bars (usage: make validate SYMBOL=AAPL)
 test: ## Run unit tests (excludes @pytest.mark.integration)
 	pytest tests/ -v
 
+# ── Retraining (Phase 3) ──
+
+retrain: ## Retrain meta-labeler with saved params (usage: make retrain SYMBOL=AAPL)
+	python scripts/retrain_model.py --symbol $(SYMBOL) --use-best-params
+
+retrain-tune: ## Retrain meta-labeler and tune hyperparameters (usage: make retrain-tune SYMBOL=AAPL [N_TRIALS=50] [TIMEOUT=600])
+	python scripts/retrain_model.py --symbol $(SYMBOL) --tune \
+		--n-trials $(or $(N_TRIALS),50) \
+		--timeout $(or $(TIMEOUT),600)
+
+retrain-all: ## Retrain the full configured universe (usage: make retrain-all [TUNE=1])
+	python scripts/retrain_model.py --all-symbols \
+		$(if $(filter 1,$(TUNE)),--tune --n-trials $(or $(N_TRIALS),50) --timeout $(or $(TIMEOUT),3600),--use-best-params)
+
 test-bars: ## Run bar constructor tests only
 	pytest tests/test_bar_constructors.py -v
 
