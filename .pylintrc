@@ -1,0 +1,37 @@
+[MASTER]
+# Python files to analyse by default (run `pylint src/` etc. to include more).
+ignore-patterns = __pycache__
+# Parallelise as much as possible.
+jobs = 0
+
+[MESSAGES CONTROL]
+# Disabled checks, with rationale:
+#
+#   broad-exception-caught (W0718): we intentionally degrade gracefully around
+#       third-party libraries (HTTP, optimiser, VAR fit, signal generators in
+#       the orchestrator). All such sites are documented with `# noqa: BLE001`
+#       and log a warning.
+#   line-too-long (C0301): formatting preference — not enforced.
+#   too-many-*: the quant models have many parameters and branches; we
+#       prefer explicit over split-for-split's-sake. Documented in code.
+#   missing-*-docstring: enforced via CI separately, not here.
+#   too-few-public-methods: dataclass containers are legitimate.
+#   import-error: transformers/torch are lazy-imported; ignore here.
+disable =
+    broad-exception-caught,
+    line-too-long,
+    too-many-arguments,
+    too-many-locals,
+    too-many-branches,
+    too-many-statements,
+    too-many-instance-attributes,
+    too-many-positional-arguments,
+    too-few-public-methods,
+    missing-module-docstring,
+    missing-class-docstring,
+    missing-function-docstring,
+    import-error,
+    duplicate-code
+
+[FORMAT]
+max-line-length = 100
