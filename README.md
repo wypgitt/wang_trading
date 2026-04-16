@@ -24,7 +24,7 @@ src/
 └── monitoring/        # Phase 5: Grafana dashboards, alerting
 ```
 
-## Quick Start (Phase 1)
+## Quick Start
 
 ```bash
 # 1. Install dependencies
@@ -44,6 +44,14 @@ python -m src.data_engine.ingestion.runner --asset-class equities
 python -m src.data_engine.validation.runner --symbol AAPL --bar-type tib
 ```
 
+## Testing
+
+```bash
+make test               # unit tests (excludes integration)
+make test-integration   # end-to-end Phase 2 pipeline test
+make bench              # Phase 2 performance benchmarks
+```
+
 ## Configuration
 
 All settings are in `config/settings.yaml`. API keys should be set via
@@ -51,8 +59,14 @@ environment variables or the config file (never committed to git).
 
 ## Phase Status
 
-- [x] Phase 1: Data Foundation (IN PROGRESS)
-- [ ] Phase 2: Feature Factory + Signal Battery
+- [x] **Phase 1: Data Foundation** (complete)
+  - TIB/VIB/dollar/volume/tick bars; ETF trick; CUSUM filter; TimescaleDB storage
+- [x] **Phase 2: Feature Factory + Signal Battery** (complete)
+  - Features: FFD, structural breaks, entropy, microstructure, GARCH, NLP sentiment, on-chain, autoencoder, classical
+  - Signals: 10 generators across the 7 canonical families plus a unified orchestrator
+  - 326 unit tests + 1 end-to-end integration test, all green
+  - Benchmarks: all 7 components under target (`make bench`)
+  - See: [docs/phase2_features.md](docs/phase2_features.md) · [docs/phase2_signals.md](docs/phase2_signals.md)
 - [ ] Phase 3: Labeling + Core ML
 - [ ] Phase 4: Backtesting + Portfolio
 - [ ] Phase 5: Execution + Paper Trading

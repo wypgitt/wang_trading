@@ -37,12 +37,13 @@ pytest-asyncio>=0.23.0
 # ============================================
 # Phase 2: Feature Factory + Signal Battery
 # ============================================
-# statsmodels>=0.14.0
-# arch>=6.0.0
-# pykalman>=0.9.7
+statsmodels>=0.14.0
+arch>=6.0.0
+pykalman>=0.9.7
 # hmmlearn>=0.3.0
-# transformers>=4.35.0   # FinBERT
-# torch>=2.0.0
+# FinBERT model (~400MB) downloads on first use of FinBERTSentimentModel.predict()
+transformers>=4.35.0   # FinBERT
+torch>=2.0.0
 
 # ============================================
 # Phase 3: Labeling + Core ML

@@ -1,4 +1,4 @@
-.PHONY: help setup test run-equities run-crypto backfill db-up db-down db-setup clean
+.PHONY: help setup test test-integration bench run-equities run-crypto backfill db-up db-down db-setup clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -46,14 +46,20 @@ validate: ## Validate bars (usage: make validate SYMBOL=AAPL)
 
 # ── Testing ──
 
-test: ## Run all tests
+test: ## Run unit tests (excludes @pytest.mark.integration)
 	pytest tests/ -v
 
 test-bars: ## Run bar constructor tests only
 	pytest tests/test_bar_constructors.py -v
 
+test-integration: ## Run end-to-end Phase 2 integration test
+	pytest tests/ -v -m integration -o addopts=""
+
 test-cov: ## Run tests with coverage
 	pytest tests/ -v --cov=src --cov-report=term-missing
+
+bench: ## Run Phase 2 performance benchmarks
+	python3 tests/benchmarks/bench_features.py
 
 # ── Utilities ──
 
