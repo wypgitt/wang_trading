@@ -67,7 +67,13 @@ environment variables or the config file (never committed to git).
   - 326 unit tests + 1 end-to-end integration test, all green
   - Benchmarks: all 7 components under target (`make bench`)
   - See: [docs/phase2_features.md](docs/phase2_features.md) · [docs/phase2_signals.md](docs/phase2_signals.md)
-- [ ] Phase 3: Labeling + Core ML
+- [x] **Phase 3: Labeling + Core ML + Bet Sizing** (complete)
+  - Labeling Engine: triple-barrier, meta-labeling pipeline, AFML sample weights (uniqueness + sequential bootstrap + return attribution + time decay)
+  - ML Layer: LightGBM/XGBoost/RandomForest meta-labeler with purged CV + isotonic calibration, Optuna TPE tuning with MedianPruner, MDI/MDA/SFI/SHAP feature importance, MLflow model registry, LSTM regime detector (Tier 2)
+  - Bet Sizing: 5-layer cascade (AFML sizing → Kelly cap → vol adjustment → ATR cap → risk budget) with full audit trail
+  - Retraining: `scripts/retrain_model.py` with `--tune` / `--use-best-params` / `--all-symbols` / `--dry-run`; `make retrain*` targets
+  - 571 unit tests + 2 end-to-end integration tests (Phase 2 and Phase 3), all green
+  - See: [docs/phase3_ml_pipeline.md](docs/phase3_ml_pipeline.md)
 - [ ] Phase 4: Backtesting + Portfolio
 - [ ] Phase 5: Execution + Paper Trading
 - [ ] Phase 6: Live Capital + RL Agent
