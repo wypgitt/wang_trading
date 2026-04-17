@@ -42,6 +42,19 @@ python -m src.data_engine.ingestion.runner --asset-class equities
 
 # 5. Validate bars
 python -m src.data_engine.validation.runner --symbol AAPL --bar-type tib
+
+# 6. Paper trading (Phase 5)
+cp config/paper_trading.example.yaml config/paper_trading.yaml
+# edit the config, then
+python -m src.execution.paper_trading --config config/paper_trading.yaml
+
+# 7. Start the monitoring stack (Grafana + Prometheus)
+docker compose up -d prometheus grafana
+python scripts/setup_grafana.py \
+    --grafana-url http://localhost:3000 --api-key <grafana-api-key>
+
+# 8. Smoke-test the full pipeline in < 10s (no external services)
+make smoke-test
 ```
 
 ## Testing
@@ -81,5 +94,13 @@ environment variables or the config file (never committed to git).
   - 756 unit tests + 3 end-to-end integration tests (Phase 2, 3, 4), all green
   - Benchmarks: all 6 Phase 4 components under target (`make bench-backtest`)
   - See: [docs/phase4_backtesting.md](docs/phase4_backtesting.md) · [docs/phase4_portfolio.md](docs/phase4_portfolio.md)
-- [ ] Phase 5: Execution + Paper Trading
+- [x] **Phase 5: Execution + Paper Trading + Monitoring** (complete)
+  - Execution Engine: Order/Fill/Position/PortfolioState models, 8 circuit breakers (fat-finger, daily-loss, drawdown throttle, model staleness, connectivity, data quality, correlation spike, dead-man), execution algorithms (ImmediateAlgo / TWAP / VWAP / Iceberg) with `select_execution_algo()` router, broker adapters (PaperBroker full implementation; Alpaca + CCXT skeletons with position reconciliation)
+  - Order Manager: end-to-end orchestration — target portfolio → pre-trade checks → cost estimate → algo selection → execution → PortfolioState update; triple-barrier exit checks (stop-loss / take-profit / time expiry); `run_cycle` per-tick entry point
+  - TCA: post-trade analyzer with slippage / impact / timing-cost / TWAP-VWAP benchmarks; execution-degradation detection; full storage schema (`orders`, `fills`, `tca_results`, `portfolio_snapshots`)
+  - Monitoring: Prometheus `MetricsCollector` (15 metrics across portfolio, orders, signals, execution, data health, features, model, breakers); tiered `AlertManager` (Log + Telegram) with 8 templated alerts and duplicate suppression; `FeatureDriftDetector` (KL / KS / mean-shift / variance-ratio)
+  - Grafana: `generate_main_dashboard()` (6 rows, 17+ panels) + `generate_alerting_rules()` + `scripts/setup_grafana.py`; Prometheus + Grafana wired into `docker-compose.yaml`
+  - Paper Trading: `PaperTradingPipeline` top-level runner with `PipelineConfig`, full `run_cycle` flow (features → signals → meta → sizing → optimizer → execution → metrics → drift); `DailyReconciliation` + `generate_daily_report`; `RetrainScheduler` with purged-CV promotion gate
+  - 913 unit tests + 4 end-to-end integration tests (including Phase 5 100-cycle integration); `scripts/smoke_test.py` runs the full stack end-to-end in under 10 seconds (`make smoke-test`)
+  - See: [docs/phase5_execution.md](docs/phase5_execution.md)
 - [ ] Phase 6: Live Capital + RL Agent

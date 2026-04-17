@@ -1,3 +1,4 @@
+# pylint: disable=no-value-for-parameter  # Click injects CLI args
 """
 Bar Validation Runner
 

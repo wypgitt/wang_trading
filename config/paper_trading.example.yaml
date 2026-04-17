@@ -1,0 +1,50 @@
+# Paper trading runner configuration (example).
+# Copy to config/paper_trading.yaml and edit for your environment.
+
+asset_class: equities
+symbols: [AAPL, MSFT, GOOGL, NVDA]
+
+data:
+  adapter: alpaca_paper        # alpaca_paper | ccxt_binance | ccxt_coinbase
+  api_key: env:ALPACA_API_KEY
+  api_secret: env:ALPACA_SECRET
+
+broker:
+  adapter: paper
+  initial_cash: 100000
+  slippage_bps: 2.0
+  fill_delay_ms: 100
+
+bars:
+  type: tib                    # tick | volume | dollar | tib | vib
+  tick_threshold: 50
+  dollar_threshold: 10000
+
+circuit_breakers:
+  max_order_pct: 0.05
+  daily_loss_limit_pct: 0.02
+  max_positions: 20
+  max_single_position_pct: 0.10
+  max_gross_exposure: 1.50
+  max_crypto_pct: 0.30
+  dd_throttle_50: 0.10
+  dd_throttle_75: 0.15
+  dd_halt: 0.20
+
+pipeline:
+  drift_check_every: 100
+  snapshot_every: 50
+  sleep_seconds: 1.0
+  max_cycles: null             # null = run forever
+
+monitoring:
+  metrics_port: 9091
+  telegram:
+    enabled: false
+    bot_token: env:TELEGRAM_BOT_TOKEN
+    chat_id: env:TELEGRAM_CHAT_ID
+  log_level: INFO
+
+storage:
+  database_url: env:DATABASE_URL
+  save_snapshots: true
