@@ -72,6 +72,7 @@ class PipelineConfig:
     sleep_seconds: float = 1.0
     regime: str | None = None
     nav_target: float = 1.0
+    positions_history_every: int = 0   # 0 = disabled; >0 persists every N cycles
 
 
 class PaperTradingPipeline:
@@ -91,6 +92,11 @@ class PaperTradingPipeline:
         alert_manager: AlertManager,
         drift_detector: FeatureDriftDetector,
         config: dict | PipelineConfig | None = None,
+        db_manager: Any | None = None,
+        retrain_pipeline: Any | None = None,
+        drift_retrain_threshold: float = 0.50,
+        drift_warning_threshold: float = 0.20,
+        drift_retrain_cooldown_hours: float = 24.0,
     ) -> None:
         self.data_adapter = data_adapter
         self.bar_constructors = bar_constructors
@@ -113,6 +119,13 @@ class PaperTradingPipeline:
             )
         self.config: PipelineConfig = config or PipelineConfig()
 
+        self.db_manager = db_manager
+        self.retrain_pipeline = retrain_pipeline
+        self.drift_retrain_threshold = float(drift_retrain_threshold)
+        self.drift_warning_threshold = float(drift_warning_threshold)
+        self.drift_retrain_cooldown_hours = float(drift_retrain_cooldown_hours)
+        self._last_drift_retrain: datetime | None = None
+        self._drift_size_haircut_until: datetime | None = None
         self.running = False
         self.cycle_count = 0
         self.start_time = datetime.now(timezone.utc)
@@ -155,6 +168,7 @@ class PaperTradingPipeline:
                     for p in meta["meta_prob"]:
                         if np.isfinite(p):
                             self.metrics.record_meta_label_prob(float(p))
+                    await self._persist_meta_labels(meta, features)
             if self.bet_sizing is not None and meta is not None:
                 bet_sizes = self.bet_sizing.compute(meta, features)
 
@@ -202,12 +216,9 @@ class PaperTradingPipeline:
             drifted = self.drift_detector.get_drifted_features(features)
             for feat in drifted:
                 self.metrics.record_feature_drift(feat, 1.0)
-            if drifted:
-                await self.alert_manager.send_alert(
-                    self.alert_manager.alert_feature_drift(
-                        drifted[0], kl=1.0,
-                    ),
-                )
+            total_features = max(1, int(features.shape[1]) if hasattr(features, "shape") else 1)
+            drift_pct = len(drifted) / total_features if total_features else 0.0
+            await self._handle_drift(drifted, drift_pct)
 
         # 10. Circuit breakers (already run by OrderManager.run_cycle; alert on any)
         for breaker in summary.get("breakers", []):
@@ -215,6 +226,16 @@ class PaperTradingPipeline:
             await self.alert_manager.send_alert(
                 self.alert_manager.alert_circuit_breaker(breaker),
             )
+
+        # 10b. Periodic positions_history snapshot
+        every = getattr(self.config, "positions_history_every", 0) or 0
+        if every > 0 and self.db_manager is not None and (self.cycle_count % every == 0):
+            try:
+                await self.db_manager.insert_positions_snapshot(
+                    datetime.now(timezone.utc), pf.positions,
+                )
+            except Exception as exc:
+                log.warning("positions_history snapshot failed: %s", exc)
 
         # 11. Log cycle summary
         log.debug(
@@ -233,6 +254,102 @@ class PaperTradingPipeline:
             "breakers": summary.get("breakers", []),
             "reconciliation": summary.get("reconciliation", []),
         }
+
+    # ── Meta-label persistence (C4) ────────────────────────────────────
+
+    async def _persist_meta_labels(
+        self, meta: pd.DataFrame, features: pd.DataFrame | None,
+    ) -> None:
+        """Write one row per meta-label prediction to the meta_labels table.
+
+        Any failure is swallowed — a DB hiccup must not break the live cycle.
+        """
+        if self.db_manager is None or meta is None or len(meta) == 0:
+            return
+        try:
+            from src.feature_factory.assembler import compute_feature_hash
+            model_version = str(getattr(self, "model_version", "") or "")
+            now = datetime.now(timezone.utc)
+            for i, row in meta.reset_index(drop=True).iterrows():
+                symbol = str(row.get("symbol", "") or "")
+                family = str(row.get("family") or row.get("signal_family") or "")
+                prob = float(row.get("meta_prob", 0.0))
+                cal = row.get("calibrated_prob")
+                cal = float(cal) if cal is not None and np.isfinite(cal) else None
+                timestamp = row.get("timestamp") or now
+                fhash: str | None = None
+                if features is not None and i < len(features):
+                    try:
+                        fhash = compute_feature_hash(features.iloc[i])
+                    except Exception:
+                        fhash = None
+                await self.db_manager.insert_meta_label(
+                    timestamp=timestamp, symbol=symbol, signal_family=family,
+                    meta_prob=prob, calibrated_prob=cal,
+                    model_version=model_version, feature_hash=fhash,
+                )
+        except Exception as exc:  # pragma: no cover - best-effort only
+            log.warning("meta_labels persistence failed: %s", exc)
+
+    # ── Drift → retrain plumbing (C3) ──────────────────────────────────
+
+    async def _handle_drift(self, drifted: list[str], drift_pct: float) -> None:
+        if not drifted:
+            return
+        now = datetime.now(timezone.utc)
+        if drift_pct >= self.drift_retrain_threshold:
+            log.warning(
+                "severe drift: %.1f%% of features (%d of them); triggering emergency retrain",
+                drift_pct * 100, len(drifted),
+            )
+            # Haircut bet sizes to 50% for 24 hours
+            self._drift_size_haircut_until = now + timedelta(hours=24)
+            await self.alert_manager.send_alert(
+                self.alert_manager.alert_feature_drift(drifted[0], kl=drift_pct)
+            )
+            if self.retrain_pipeline is not None:
+                cooldown_ok = (
+                    self._last_drift_retrain is None
+                    or (now - self._last_drift_retrain)
+                       >= timedelta(hours=self.drift_retrain_cooldown_hours)
+                )
+                if cooldown_ok:
+                    self._last_drift_retrain = now
+                    try:
+                        asyncio.create_task(self._dispatch_emergency_retrain(drifted, drift_pct))
+                    except RuntimeError as exc:  # pragma: no cover - no running loop
+                        log.warning("could not schedule retrain: %s", exc)
+                else:
+                    log.info("drift retrain skipped — within cooldown window")
+        elif drift_pct >= self.drift_warning_threshold:
+            await self.alert_manager.send_alert(
+                self.alert_manager.alert_feature_drift(drifted[0], kl=drift_pct)
+            )
+        else:
+            log.debug("mild drift: %.1f%% (%d features)", drift_pct * 100, len(drifted))
+
+    async def _dispatch_emergency_retrain(
+        self, drifted: list[str], drift_pct: float,
+    ) -> None:
+        """Fire-and-forget wrapper so run_cycle is never blocked by retraining."""
+        try:
+            await self.retrain_pipeline.emergency_retrain(
+                symbol="",
+                reason=f"drift_pct={drift_pct:.2f} features={drifted[:5]}",
+                close=pd.Series(dtype=float),
+                bars=pd.DataFrame(),
+            )
+        except Exception as exc:  # pragma: no cover - best-effort
+            log.exception("emergency retrain failed: %s", exc)
+
+    @property
+    def drift_size_multiplier(self) -> float:
+        if self._drift_size_haircut_until is None:
+            return 1.0
+        if datetime.now(timezone.utc) >= self._drift_size_haircut_until:
+            self._drift_size_haircut_until = None
+            return 1.0
+        return 0.5
 
     # ── Main loop ──────────────────────────────────────────────────────
 

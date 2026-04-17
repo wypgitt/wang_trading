@@ -137,6 +137,9 @@ class MetaLabelingPipeline:
         close: pd.Series,
         signals_df: pd.DataFrame,
         features_df: pd.DataFrame,
+        *,
+        db_manager: object | None = None,
+        symbol: str | None = None,
     ) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
         """
         Build ``(X, y, sample_weights)`` for training the meta-labeler.
@@ -277,7 +280,35 @@ class MetaLabelingPipeline:
             weights = np.ones_like(raw_weights)
         sample_weights = pd.Series(weights, index=X.index, name="sample_weight")
 
+        if db_manager is not None and symbol is not None:
+            self._persist_labels(combined, weights, db_manager, symbol)
+
         return X, y, sample_weights
+
+    @staticmethod
+    def _persist_labels(
+        combined: pd.DataFrame, weights: np.ndarray,
+        db_manager: object, symbol: str,
+    ) -> None:
+        """Best-effort async insert of the labels frame into TimescaleDB."""
+        import asyncio as _asyncio
+        labels_df = combined.copy()
+        labels_df["symbol"] = symbol
+        labels_df["sample_weight"] = weights
+        for col in ("volatility", "upper_barrier", "lower_barrier",
+                    "barrier_touched", "return_pct", "holding_period_bars",
+                    "vertical_barrier"):
+            if col not in labels_df.columns:
+                labels_df[col] = None
+        try:
+            coro = db_manager.insert_labels(labels_df)  # type: ignore[attr-defined]
+            loop = _asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(coro)
+            finally:
+                loop.close()
+        except Exception as exc:  # pragma: no cover - best-effort
+            logger.warning(f"persist_labels failed: {exc}")
 
     def prepare_live_features(
         self,
