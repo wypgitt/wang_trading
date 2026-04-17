@@ -69,6 +69,9 @@ test-bars: ## Run bar constructor tests only
 test-integration: ## Run end-to-end Phase 2 integration test
 	pytest tests/ -v -m integration -o addopts=""
 
+smoke-test: ## Run end-to-end Phase 5 smoke test (no external services)
+	python3 scripts/smoke_test.py
+
 test-cov: ## Run tests with coverage
 	pytest tests/ -v --cov=src --cov-report=term-missing
 

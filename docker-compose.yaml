@@ -28,5 +28,31 @@ services:
       - "6379:6379"
     restart: unless-stopped
 
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: quant-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: quant-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - timescaledb
+    restart: unless-stopped
+
 volumes:
   timescaledb_data:
+  prometheus_data:
+  grafana_data:
