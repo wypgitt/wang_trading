@@ -75,6 +75,9 @@ test-cov: ## Run tests with coverage
 bench: ## Run Phase 2 performance benchmarks
 	python3 tests/benchmarks/bench_features.py
 
+bench-backtest: ## Run Phase 4 backtesting / portfolio benchmarks
+	python3 tests/benchmarks/bench_backtesting.py
+
 # ── Utilities ──
 
 clean: ## Remove generated files

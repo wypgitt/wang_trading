@@ -48,8 +48,9 @@ python -m src.data_engine.validation.runner --symbol AAPL --bar-type tib
 
 ```bash
 make test               # unit tests (excludes integration)
-make test-integration   # end-to-end Phase 2 pipeline test
+make test-integration   # end-to-end Phase 2/3/4 pipeline tests
 make bench              # Phase 2 performance benchmarks
+make bench-backtest     # Phase 4 backtesting / portfolio benchmarks
 ```
 
 ## Configuration
@@ -74,6 +75,11 @@ environment variables or the config file (never committed to git).
   - Retraining: `scripts/retrain_model.py` with `--tune` / `--use-best-params` / `--all-symbols` / `--dry-run`; `make retrain*` targets
   - 571 unit tests + 2 end-to-end integration tests (Phase 2 and Phase 3), all green
   - See: [docs/phase3_ml_pipeline.md](docs/phase3_ml_pipeline.md)
-- [ ] Phase 4: Backtesting + Portfolio
+- [x] **Phase 4: Backtesting + Portfolio** (complete)
+  - Backtesting: walk-forward engine with realistic transaction costs (Johnson square-root impact + IBKR-style commissions, spread, slippage); CPCV (45 paths) / Deflated Sharpe / PBO validation gates; `BacktestReport` with monthly returns, drawdown table, regime-conditional stats; `StrategyGate` orchestrator with `quick_validate` fast path
+  - Portfolio: HRP (default), PCA factor risk model with `neutralize_factors`, risk parity (Griveau-Billion coordinate descent), multi-strategy allocator with risk-budget enforcement (design-doc §8.5)
+  - 756 unit tests + 3 end-to-end integration tests (Phase 2, 3, 4), all green
+  - Benchmarks: all 6 Phase 4 components under target (`make bench-backtest`)
+  - See: [docs/phase4_backtesting.md](docs/phase4_backtesting.md) · [docs/phase4_portfolio.md](docs/phase4_portfolio.md)
 - [ ] Phase 5: Execution + Paper Trading
 - [ ] Phase 6: Live Capital + RL Agent
