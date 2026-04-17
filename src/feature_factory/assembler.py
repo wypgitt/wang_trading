@@ -17,6 +17,7 @@ Expected ``bars_df`` columns: the Bar dataclass fields
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 import numpy as np
@@ -28,6 +29,33 @@ from src.feature_factory.fractional_diff import find_min_d, frac_diff_ffd
 from src.feature_factory.microstructure import compute_microstructure_features
 from src.feature_factory.structural_breaks import compute_structural_break_features
 from src.feature_factory.volatility import compute_volatility_features
+
+
+def compute_feature_hash(feature_row: pd.Series, *, decimals: int = 10) -> str:
+    """Deterministic SHA-256 of a single feature row (C4).
+
+    Used so a persisted meta-label prediction can be replayed against the
+    exact feature vector that produced it. The serialization is stable:
+    index is sorted alphabetically, float values are rounded to ``decimals``
+    before formatting (``nan`` → ``"nan"``), integers keep their type,
+    name/value pairs are joined by ``|``.
+    """
+    if feature_row is None or len(feature_row) == 0:
+        return hashlib.sha256(b"").hexdigest()
+    items: list[str] = []
+    for name in sorted(feature_row.index.astype(str).tolist()):
+        value = feature_row[name]
+        if isinstance(value, float) or isinstance(value, np.floating):
+            v = float(value)
+            if np.isnan(v):
+                items.append(f"{name}=nan")
+            else:
+                items.append(f"{name}={round(v, decimals):.{decimals}f}")
+        elif isinstance(value, (int, np.integer)) and not isinstance(value, bool):
+            items.append(f"{name}={int(value)}")
+        else:
+            items.append(f"{name}={value}")
+    return hashlib.sha256("|".join(items).encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------

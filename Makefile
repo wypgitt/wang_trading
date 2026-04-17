@@ -52,6 +52,9 @@ test: ## Run unit tests (excludes @pytest.mark.integration)
 preflight: ## Run pre-flight checks before live trading (P6.05)
 	python -m src.execution.preflight --full-check
 
+audit-conformance: ## Check design-doc conformance (C5). Exit 0 if >= 95%.
+	python scripts/design_doc_audit.py
+
 live-start: ## Start the live trading pipeline (P6.07) — requires preflight clean
 	python -m src.execution.live_trading --config config/live_trading.yaml
 

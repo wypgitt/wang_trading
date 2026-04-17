@@ -117,6 +117,60 @@ SELECT create_hypertable('signals', 'timestamp',
     chunk_time_interval => INTERVAL '7 days',
     if_not_exists => TRUE
 );
+
+-- Triple-barrier labels (Phase 3 / design doc §11.2)
+CREATE TABLE IF NOT EXISTS labels (
+    event_timestamp     TIMESTAMPTZ NOT NULL,
+    symbol              TEXT        NOT NULL,
+    side                SMALLINT    NOT NULL,
+    volatility          DOUBLE PRECISION,
+    vertical_barrier    TIMESTAMPTZ,
+    upper_barrier       DOUBLE PRECISION,
+    lower_barrier       DOUBLE PRECISION,
+    exit_timestamp      TIMESTAMPTZ,
+    barrier_touched     TEXT,
+    return_pct          DOUBLE PRECISION,
+    label               SMALLINT,
+    holding_period_bars INTEGER,
+    sample_weight       DOUBLE PRECISION,
+    created_at          TIMESTAMPTZ DEFAULT NOW()
+);
+SELECT create_hypertable('labels', 'event_timestamp', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_labels_symbol_time ON labels (symbol, event_timestamp DESC);
+
+-- Persisted meta-labeler probabilities (Phase 3 / design doc §11.2)
+CREATE TABLE IF NOT EXISTS meta_labels (
+    event_timestamp  TIMESTAMPTZ NOT NULL,
+    symbol           TEXT        NOT NULL,
+    signal_family    TEXT        NOT NULL,
+    meta_prob        DOUBLE PRECISION NOT NULL,
+    calibrated_prob  DOUBLE PRECISION,
+    model_version    TEXT        NOT NULL,
+    feature_hash     TEXT,
+    created_at       TIMESTAMPTZ DEFAULT NOW()
+);
+SELECT create_hypertable('meta_labels', 'event_timestamp', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_meta_labels_symbol_time ON meta_labels (symbol, event_timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_meta_labels_model_version ON meta_labels (model_version);
+
+-- Position-state snapshots (design doc §11.2)
+CREATE TABLE IF NOT EXISTS positions_history (
+    timestamp          TIMESTAMPTZ NOT NULL,
+    symbol             TEXT        NOT NULL,
+    side               SMALLINT    NOT NULL,
+    quantity           DOUBLE PRECISION NOT NULL,
+    avg_entry_price    DOUBLE PRECISION NOT NULL,
+    current_price      DOUBLE PRECISION NOT NULL,
+    unrealized_pnl     DOUBLE PRECISION,
+    realized_pnl       DOUBLE PRECISION,
+    signal_family      TEXT,
+    entry_timestamp    TIMESTAMPTZ,
+    stop_loss          DOUBLE PRECISION,
+    take_profit        DOUBLE PRECISION,
+    vertical_barrier   TIMESTAMPTZ
+);
+SELECT create_hypertable('positions_history', 'timestamp', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_pos_hist_symbol_time ON positions_history (symbol, timestamp DESC);
 """
 
 
@@ -272,3 +326,153 @@ class DatabaseManager:
         if self._engine:
             self._engine.dispose()
             self._engine = None
+
+    # ── Labels / meta-labels / positions (C1) ──────────────────────────
+
+    _LABEL_COLUMNS: tuple[str, ...] = (
+        "event_timestamp", "symbol", "side", "volatility",
+        "vertical_barrier", "upper_barrier", "lower_barrier",
+        "exit_timestamp", "barrier_touched", "return_pct",
+        "label", "holding_period_bars", "sample_weight",
+    )
+
+    async def insert_labels(self, labels_df: pd.DataFrame) -> int:
+        """Bulk-insert a labels DataFrame. Returns rows inserted."""
+        if labels_df is None or len(labels_df) == 0:
+            return 0
+        rows: list[dict] = []
+        for _, row in labels_df.iterrows():
+            payload = {col: row.get(col) for col in self._LABEL_COLUMNS}
+            rows.append(payload)
+        cols = ", ".join(self._LABEL_COLUMNS)
+        placeholders = ", ".join(f":{c}" for c in self._LABEL_COLUMNS)
+        with self.engine.connect() as conn:
+            conn.execute(
+                text(f"INSERT INTO labels ({cols}) VALUES ({placeholders})"),
+                rows,
+            )
+            conn.commit()
+        return len(rows)
+
+    async def insert_meta_label(
+        self,
+        timestamp: datetime,
+        symbol: str,
+        signal_family: str,
+        meta_prob: float,
+        calibrated_prob: Optional[float] = None,
+        model_version: str = "",
+        feature_hash: Optional[str] = None,
+    ) -> None:
+        with self.engine.connect() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO meta_labels (
+                        event_timestamp, symbol, signal_family, meta_prob,
+                        calibrated_prob, model_version, feature_hash
+                    ) VALUES (
+                        :ts, :symbol, :family, :prob, :cal_prob,
+                        :model_version, :feature_hash
+                    )
+                """),
+                {
+                    "ts": timestamp, "symbol": symbol, "family": signal_family,
+                    "prob": float(meta_prob),
+                    "cal_prob": None if calibrated_prob is None else float(calibrated_prob),
+                    "model_version": model_version,
+                    "feature_hash": feature_hash,
+                },
+            )
+            conn.commit()
+
+    async def insert_positions_snapshot(
+        self, timestamp: datetime, positions: dict,
+    ) -> int:
+        """Snapshot a ``{symbol: Position}`` mapping into positions_history."""
+        if not positions:
+            return 0
+        rows = []
+        for symbol, pos in positions.items():
+            rows.append({
+                "timestamp": timestamp,
+                "symbol": symbol,
+                "side": getattr(pos, "side", 0),
+                "quantity": float(getattr(pos, "quantity", 0.0)),
+                "avg_entry_price": float(getattr(pos, "avg_entry_price", 0.0)),
+                "current_price": float(getattr(pos, "current_price", 0.0)),
+                "unrealized_pnl": float(getattr(pos, "unrealized_pnl", 0.0) or 0.0),
+                "realized_pnl": float(getattr(pos, "realized_pnl", 0.0) or 0.0),
+                "signal_family": getattr(pos, "signal_family", "") or "",
+                "entry_timestamp": getattr(pos, "entry_timestamp", None),
+                "stop_loss": getattr(pos, "stop_loss", None),
+                "take_profit": getattr(pos, "take_profit", None),
+                "vertical_barrier": getattr(pos, "vertical_barrier", None),
+            })
+        with self.engine.connect() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO positions_history (
+                        timestamp, symbol, side, quantity, avg_entry_price,
+                        current_price, unrealized_pnl, realized_pnl,
+                        signal_family, entry_timestamp, stop_loss, take_profit,
+                        vertical_barrier
+                    ) VALUES (
+                        :timestamp, :symbol, :side, :quantity, :avg_entry_price,
+                        :current_price, :unrealized_pnl, :realized_pnl,
+                        :signal_family, :entry_timestamp, :stop_loss, :take_profit,
+                        :vertical_barrier
+                    )
+                """),
+                rows,
+            )
+            conn.commit()
+        return len(rows)
+
+    async def get_labels(
+        self, symbol: str,
+        start: Optional[datetime] = None, end: Optional[datetime] = None,
+    ) -> pd.DataFrame:
+        query = "SELECT * FROM labels WHERE symbol = :symbol"
+        params: dict = {"symbol": symbol}
+        if start is not None:
+            query += " AND event_timestamp >= :start"
+            params["start"] = start
+        if end is not None:
+            query += " AND event_timestamp <= :end"
+            params["end"] = end
+        query += " ORDER BY event_timestamp ASC"
+        return pd.read_sql(text(query), self.engine, params=params)
+
+    async def get_meta_labels(
+        self, symbol: str,
+        start: Optional[datetime] = None, end: Optional[datetime] = None,
+        model_version: Optional[str] = None,
+    ) -> pd.DataFrame:
+        query = "SELECT * FROM meta_labels WHERE symbol = :symbol"
+        params: dict = {"symbol": symbol}
+        if start is not None:
+            query += " AND event_timestamp >= :start"
+            params["start"] = start
+        if end is not None:
+            query += " AND event_timestamp <= :end"
+            params["end"] = end
+        if model_version is not None:
+            query += " AND model_version = :model_version"
+            params["model_version"] = model_version
+        query += " ORDER BY event_timestamp ASC"
+        return pd.read_sql(text(query), self.engine, params=params)
+
+    async def get_positions_history(
+        self, symbol: str,
+        start: Optional[datetime] = None, end: Optional[datetime] = None,
+    ) -> pd.DataFrame:
+        query = "SELECT * FROM positions_history WHERE symbol = :symbol"
+        params: dict = {"symbol": symbol}
+        if start is not None:
+            query += " AND timestamp >= :start"
+            params["start"] = start
+        if end is not None:
+            query += " AND timestamp <= :end"
+            params["end"] = end
+        query += " ORDER BY timestamp ASC"
+        return pd.read_sql(text(query), self.engine, params=params)

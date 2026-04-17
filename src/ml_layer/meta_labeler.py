@@ -222,8 +222,20 @@ class MetaLabeler:
             self.calibrator_ = self._fit_calibrator(X, y)
         return self
 
-    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
-        """Return P(class=1) per row, calibrated when a calibrator is fitted."""
+    def predict_proba(
+        self,
+        X: pd.DataFrame,
+        *,
+        db_manager: object | None = None,
+        symbol: str | None = None,
+        signal_family: str = "",
+        model_version: str = "",
+    ) -> np.ndarray:
+        """Return P(class=1) per row, calibrated when a calibrator is fitted.
+
+        When ``db_manager`` and ``symbol`` are supplied, every returned
+        probability is persisted to the ``meta_labels`` hypertable.
+        """
         if self.model_ is None:
             raise RuntimeError("MetaLabeler is not fitted")
         raw = self.model_.predict_proba(X)
@@ -232,10 +244,40 @@ class MetaLabeler:
                 f"expected predict_proba to return a 2-column matrix "
                 f"(got shape {raw.shape})"
             )
-        p1 = raw[:, 1]
+        raw_p1 = raw[:, 1]
+        p1 = raw_p1
         if self.calibrator_ is not None:
             p1 = self.calibrator_.transform(p1)
+
+        if db_manager is not None and symbol is not None:
+            self._persist_meta_labels(
+                X, raw_p1, p1, db_manager, symbol, signal_family, model_version,
+            )
         return p1
+
+    @staticmethod
+    def _persist_meta_labels(
+        X: pd.DataFrame, raw: np.ndarray, calibrated: np.ndarray,
+        db_manager: object, symbol: str, signal_family: str, model_version: str,
+    ) -> None:
+        import asyncio as _asyncio
+        timestamps = X.index if hasattr(X, "index") else range(len(raw))
+        loop = _asyncio.new_event_loop()
+        try:
+            for i, ts in enumerate(timestamps):
+                try:
+                    loop.run_until_complete(db_manager.insert_meta_label(  # type: ignore[attr-defined]
+                        timestamp=ts,
+                        symbol=symbol,
+                        signal_family=signal_family,
+                        meta_prob=float(raw[i]),
+                        calibrated_prob=float(calibrated[i]),
+                        model_version=model_version,
+                    ))
+                except Exception:  # pragma: no cover - best-effort
+                    break
+        finally:
+            loop.close()
 
     def predict(self, X: pd.DataFrame, threshold: float = 0.5) -> np.ndarray:
         """Binary prediction at the given probability threshold."""

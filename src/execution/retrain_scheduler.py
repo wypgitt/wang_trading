@@ -49,6 +49,7 @@ class RetrainScheduler:
         alert_manager: AlertManager,
         trainer: TrainerFn | None = None,
         evaluator: Callable[[Any, pd.DataFrame, pd.Series], float] | None = None,
+        retrain_pipeline: Any | None = None,
     ) -> None:
         self.retrain_interval_days = retrain_interval_days
         self.min_new_bars = min_new_bars
@@ -56,7 +57,29 @@ class RetrainScheduler:
         self.alert_manager = alert_manager
         self.trainer = trainer
         self.evaluator = evaluator
+        self.retrain_pipeline = retrain_pipeline
         self.status = RetrainStatus()
+
+    # ── Delegation to the full RetrainPipeline ─────────────────────────
+
+    async def retrain_via_pipeline(
+        self, symbol: str, close: pd.Series, bars: pd.DataFrame,
+        *, trigger: str = "scheduled",
+    ) -> Any | None:
+        """Full retrain loop via :class:`RetrainPipeline` (C2)."""
+        if self.retrain_pipeline is None:
+            raise RuntimeError("retrain_pipeline not configured")
+        run = await self.retrain_pipeline.run(symbol, close, bars, trigger=trigger)
+        self.status.last_retrain = datetime.now(timezone.utc)
+        self.status.next_scheduled = (
+            self.status.last_retrain + timedelta(days=self.retrain_interval_days)
+        )
+        self.status.new_bars_since_retrain = 0
+        if run.promoted:
+            self.status.promotions += 1
+        else:
+            self.status.rejected += 1
+        return run
 
     # ── Scheduling ─────────────────────────────────────────────────────
 
