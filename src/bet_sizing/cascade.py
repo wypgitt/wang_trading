@@ -134,6 +134,7 @@ class BetSizingCascade:
         price: float | None = None,
         point_value: float = 1.0,
         asset_class: str = "equity",
+        deployment_multiplier: float = 1.0,
     ) -> dict[str, Any]:
         """
         Run all 5 layers and return an audit dict.
@@ -244,6 +245,14 @@ class BetSizingCascade:
             constraints=constraints,
         )
         final_magnitude = max(0.0, final_magnitude)
+        if deployment_multiplier != 1.0:
+            if deployment_multiplier < 0:
+                raise ValueError(
+                    f"deployment_multiplier must be >= 0 (got {deployment_multiplier})"
+                )
+            final_magnitude *= float(deployment_multiplier)
+            if deployment_multiplier < 1.0:
+                constraints.append("deployment_multiplier")
         final_size = side * final_magnitude
 
         return {

@@ -49,6 +49,21 @@ validate: ## Validate bars (usage: make validate SYMBOL=AAPL)
 test: ## Run unit tests (excludes @pytest.mark.integration)
 	pytest tests/ -v
 
+preflight: ## Run pre-flight checks before live trading (P6.05)
+	python -m src.execution.preflight --full-check
+
+live-start: ## Start the live trading pipeline (P6.07) — requires preflight clean
+	python -m src.execution.live_trading --config config/live_trading.yaml
+
+live-stop: ## Request a graceful shutdown (touches the HALT file)
+	@date -u +"halted_at=%Y-%m-%dT%H:%M:%SZ" > .live_halt && echo "HALT file written: .live_halt"
+
+live-flatten: ## Emergency-flatten: cancel orders and close all positions
+	python -m src.execution.live_trading --emergency-flatten
+
+recover: ## Run disaster recovery against the last snapshot (P6.13)
+	python -m src.execution.disaster_recovery --recover
+
 # ── Retraining (Phase 3) ──
 
 retrain: ## Retrain meta-labeler with saved params (usage: make retrain SYMBOL=AAPL)

@@ -1,0 +1,43 @@
+[Unit]
+Description=Wang Trading live pipeline
+Documentation=file:///opt/wang_trading/docs/deployment.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+# Never start automatically on boot — operator must run preflight first.
+ConditionPathExists=!/opt/wang_trading/.live_halt
+
+[Service]
+Type=simple
+User=wang
+Group=wang
+WorkingDirectory=/opt/wang_trading
+EnvironmentFile=/opt/wang_trading/config/live_trading.env
+Environment="PYTHONPATH=/opt/wang_trading"
+Environment="KMP_DUPLICATE_LIB_OK=TRUE"
+
+ExecStartPre=/opt/wang_trading/venv/bin/python -m src.execution.preflight --full-check
+ExecStart=/opt/wang_trading/venv/bin/python -m src.execution.live_trading \
+    --config /opt/wang_trading/config/live_trading.yaml
+
+# Graceful stop: SIGTERM → 30s → SIGKILL
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=15s
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+# Resource + hardening
+LimitNOFILE=65536
+LimitNPROC=4096
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/wang_trading/logs /opt/wang_trading/data /var/log/wang_trading
+PrivateTmp=true
+
+StandardOutput=append:/var/log/wang_trading/live_trading.out.log
+StandardError=append:/var/log/wang_trading/live_trading.err.log
+
+[Install]
+WantedBy=multi-user.target

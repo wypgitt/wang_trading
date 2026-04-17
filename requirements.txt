@@ -64,10 +64,14 @@ shap>=0.43.0
 # Phase 5: Execution + Paper Trading
 # ============================================
 prometheus_client>=0.19.0
+alpaca-py>=0.20.0
+ib_insync>=0.9.86
+cryptography>=41.0.0
 # ib_insync>=0.9.86
 # prefect>=2.14.0
 
 # ============================================
 # Phase 6: RL Agent
 # ============================================
-# stable-baselines3>=2.2.0
+stable_baselines3>=2.2.0
+gymnasium>=0.29.0
