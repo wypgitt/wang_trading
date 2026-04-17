@@ -55,6 +55,39 @@ python scripts/setup_grafana.py \
 
 # 8. Smoke-test the full pipeline in < 10s (no external services)
 make smoke-test
+
+# 9. Production smoke test — exercises every Phase 6 system (preflight,
+#    deployment controller, audit log, snapshots, recovery, alerts).
+python scripts/production_smoke_test.py
+```
+
+## Live trading
+
+**⚠️ DANGER.** Live trading puts real capital at risk. Do not start the
+live pipeline without reading [`docs/go_live_checklist.md`](docs/go_live_checklist.md)
+and completing every item.
+
+```bash
+# First-time install on a Linux host (creates user, venv, systemd unit)
+sudo ./scripts/deploy.sh
+
+# 1. Touch the operator check-in sentinel (proves a human is present)
+sudo -u wang touch /opt/wang_trading/.operator_checkin
+
+# 2. Run preflight — 18 blocker checks must pass
+make preflight
+
+# 3. If (and only if) preflight is green:
+make live-start       # or: sudo systemctl start wang-live-trading
+
+# Graceful stop (writes HALT sentinel — operator must clear before next start):
+make live-stop
+
+# Emergency: cancel all orders + close all positions
+make live-flatten
+
+# Disaster recovery after a crash or unclean exit:
+make recover
 ```
 
 ## Testing
@@ -103,4 +136,32 @@ environment variables or the config file (never committed to git).
   - Paper Trading: `PaperTradingPipeline` top-level runner with `PipelineConfig`, full `run_cycle` flow (features → signals → meta → sizing → optimizer → execution → metrics → drift); `DailyReconciliation` + `generate_daily_report`; `RetrainScheduler` with purged-CV promotion gate
   - 913 unit tests + 4 end-to-end integration tests (including Phase 5 100-cycle integration); `scripts/smoke_test.py` runs the full stack end-to-end in under 10 seconds (`make smoke-test`)
   - See: [docs/phase5_execution.md](docs/phase5_execution.md)
-- [ ] Phase 6: Live Capital + RL Agent
+- [x] **Phase 6: Live Capital + RL Agent + Production Hardening** (complete)
+  - Live broker adapters: Alpaca (equities), CCXT (crypto — Binance/Coinbase/Kraken/Bybit), IBKR (futures) — each gated by an env-var switch (`WANG_ALLOW_LIVE_TRADING`, `WANG_ALLOW_LIVE_CRYPTO`, `WANG_ALLOW_LIVE_FUTURES`)
+  - `BrokerFactory` + `SmartOrderRouter` for cross-venue best-execution and depth aggregation
+  - `PreflightChecker` with 18 blocker checks across broker connectivity, model readiness, paper-trading proof, infrastructure, risk limits, and operator acknowledgment
+  - Graduated capital deployment (`CapitalDeploymentController`): 4-phase ramp (pilot $5K / beta $15K / scale $50K / full) with paper-vs-live divergence detection and auto-halt
+  - `LiveTradingPipeline` (subclass of paper): HALT/CRASH sentinels, operator check-in, deployment multiplier, daily divergence check, weekly promotion check, emergency flatten, HMAC-chained compliance audit log
+  - RL portfolio optimizer: Gymnasium `TradingEnv` + PPO (`stable_baselines3`) agent + `ShadowComparisonEngine` with paired t-test promotion gate + `RLPromotionController` with 3-day / 5%-drawdown auto-revert watchdog
+  - Disaster recovery: checksummed state snapshots, crash signal handler, broker reconciliation with orphan-order cancellation
+  - Secrets management: pluggable backends (env, Fernet-encrypted file, AWS Secrets Manager, GCP Secret Manager) with 5-min TTL cache
+  - Deployment: `scripts/deploy.sh`, supervisor configs for all four services, systemd unit, logrotate, runbooks in `docs/runbooks/`
+  - 1079 unit tests + 28 integration tests, all green; `scripts/production_smoke_test.py` runs every Phase 6 subsystem in < 10 s
+  - See: [docs/go_live_checklist.md](docs/go_live_checklist.md) · [docs/runbooks/](docs/runbooks/README.md) · [docs/architecture_overview.md](docs/architecture_overview.md) · [docs/deployment.md](docs/deployment.md)
+
+## Production operations
+
+Once live, the system is run by a named on-call operator following the
+runbooks. Every decision — signal, meta-label, bet size, order, fill,
+circuit-breaker trigger, phase promotion, operator action — is written to
+the HMAC-chained compliance audit log.
+
+| Runbook | Opens… |
+|---------|--------|
+| [Daily operations](docs/runbooks/daily_operations.md) | Every trading day |
+| [Incident response](docs/runbooks/incident_response.md) | SEV1–SEV4 triage |
+| [Deployment](docs/runbooks/deployment.md) | Ships + rollbacks |
+| [Model operations](docs/runbooks/model_operations.md) | Retrain, promotion, RL |
+| [Capital management](docs/runbooks/capital_management.md) | Adding / withdrawing funds |
+| [Compliance](docs/runbooks/compliance.md) | Tax, audit export, retention |
+| [Go-live checklist](docs/go_live_checklist.md) | Before first live dollar |

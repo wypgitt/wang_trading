@@ -1,0 +1,41 @@
+# Live trading runner configuration (P6.07).
+# Copy to live_trading.yaml and fill in secrets.
+
+asset_class: equities
+symbols: [AAPL, MSFT, GOOGL]
+
+# Deployment controller
+deployment:
+  asset_class: equities
+  # Omit `phases` to use the default 4-phase ramp (see capital_deployment.py)
+
+# Operator safeguards
+operator_checkin_path: .operator_checkin
+operator_checkin_max_age_h: 1.0
+halt_file: .live_halt
+compliance_log_path: logs/live_trading_compliance.log
+
+# Broker credentials — also see settings.yaml
+alpaca:
+  api_key: ""
+  secret_key: ""
+  paper: false
+binance:
+  api_key: ""
+  secret_key: ""
+  sandbox: false
+ibkr:
+  host: 127.0.0.1
+  port: 7496
+  client_id: 1
+  live: true
+  account_id: ""
+
+# Pipeline runtime
+pipeline:
+  drift_check_every: 100
+  snapshot_every: 50
+  sleep_seconds: 1.0
+  regime: null
+
+# Divergence/promotion cadence handled by the runner; no tuning required here.

@@ -1,0 +1,82 @@
+# Futures contract specifications for IBKR live trading (P6.03).
+#
+# tick_size         – minimum price increment (in quote currency)
+# multiplier        – dollar value per point per contract
+# margin_requirement – initial margin per contract (USD)
+# months            – active quarterly/serial contract-month codes
+#                     (F=Jan G=Feb H=Mar J=Apr K=May M=Jun
+#                      N=Jul Q=Aug U=Sep V=Oct X=Nov Z=Dec)
+# session_hours.rth_start / rth_end – Regular Trading Hours (24-hour local)
+# session_hours.timezone – IANA tz for the session_hours clock
+
+ES:                       # E-mini S&P 500
+  exchange: CME
+  currency: USD
+  tick_size: 0.25
+  multiplier: 50
+  margin_requirement: 13200
+  months: [H, M, U, Z]
+  session_hours:
+    rth_start: "09:30"
+    rth_end: "16:00"
+    timezone: America/New_York
+
+NQ:                       # E-mini Nasdaq-100
+  exchange: CME
+  currency: USD
+  tick_size: 0.25
+  multiplier: 20
+  margin_requirement: 17600
+  months: [H, M, U, Z]
+  session_hours:
+    rth_start: "09:30"
+    rth_end: "16:00"
+    timezone: America/New_York
+
+CL:                       # Crude Oil (WTI)
+  exchange: NYMEX
+  currency: USD
+  tick_size: 0.01
+  multiplier: 1000
+  margin_requirement: 6600
+  months: [F, G, H, J, K, M, N, Q, U, V, X, Z]
+  session_hours:
+    rth_start: "09:00"
+    rth_end: "14:30"
+    timezone: America/New_York
+
+GC:                       # Gold
+  exchange: COMEX
+  currency: USD
+  tick_size: 0.10
+  multiplier: 100
+  margin_requirement: 11000
+  months: [G, J, M, Q, V, Z]
+  session_hours:
+    rth_start: "08:20"
+    rth_end: "13:30"
+    timezone: America/New_York
+
+ZN:                       # 10-Year Treasury Note
+  exchange: CBOT
+  currency: USD
+  tick_size: 0.015625     # 1/64th of 1 point
+  multiplier: 1000
+  margin_requirement: 1870
+  months: [H, M, U, Z]
+  session_hours:
+    rth_start: "07:20"
+    rth_end: "16:00"
+    timezone: America/Chicago
+
+ZC:                       # Corn
+  exchange: CBOT
+  currency: USD
+  tick_size: 0.25
+  multiplier: 50
+  margin_requirement: 1500
+  months: [H, K, N, U, Z]
+  session_hours:
+    rth_start: "08:30"
+    rth_end: "13:20"
+    timezone: America/Chicago
