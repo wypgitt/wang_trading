@@ -147,7 +147,10 @@ jobs:
       - name: Install MLflow acceptance dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install numpy pandas scipy sqlalchemy loguru scikit-learn pytest mlflow
+          python -m pip install \
+            numpy pandas scipy sqlalchemy pyyaml python-dotenv loguru \
+            pydantic pydantic-settings prometheus_client scikit-learn \
+            statsmodels arch pykalman pyarrow pytest pytest-asyncio mlflow
       - name: Train, promote, reload, preflight, infer
         env:
           PYTEST_ADDOPTS: ""
