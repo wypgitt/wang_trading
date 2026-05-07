@@ -70,7 +70,9 @@ When the goal is simply "get to cash now":
 ```bash
 sudo systemctl stop wang-live-trading
 sudo -u wang /opt/wang_trading/venv/bin/python \
-    -m src.execution.live_trading --emergency-flatten
+    -m src.execution.live_trading \
+    --config /opt/wang_trading/config/live_trading.yaml \
+    --emergency-flatten
 ```
 
 This cancels every open order and submits market exits for every open

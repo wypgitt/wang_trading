@@ -62,6 +62,17 @@ class CascadeConfig:
     max_sector_exposure: float = 0.20  # GICS sector cap (equities)
 
 
+def _align_timestamp_to_index(
+    timestamp: pd.Timestamp,
+    index: pd.DatetimeIndex,
+) -> pd.Timestamp:
+    if index.tz is None:
+        return timestamp.tz_convert(None) if timestamp.tzinfo is not None else timestamp
+    if timestamp.tzinfo is None:
+        return timestamp.tz_localize(index.tz)
+    return timestamp.tz_convert(index.tz)
+
+
 @dataclass
 class FamilyStats:
     """Historical win/loss magnitudes per signal family (for Kelly)."""
@@ -305,13 +316,14 @@ class BetSizingCascade:
 
         prob_col = "prob" if "prob" in signals_df.columns else "meta_label_prob"
 
-        feat_index = features_df.index.to_numpy()
+        feat_index = pd.DatetimeIndex(features_df.index)
 
         rows: list[dict[str, Any]] = []
         for _, sig in signals_df.iterrows():
             ts = pd.Timestamp(sig["timestamp"])
+            lookup_ts = _align_timestamp_to_index(ts, feat_index)
             # Backward-fill feature lookup.
-            pos = int(np.searchsorted(feat_index, ts.to_numpy(), side="right")) - 1
+            pos = int(feat_index.searchsorted(lookup_ts, side="right")) - 1
             if pos < 0:
                 # No feature history yet — skip with final_size = 0.
                 rows.append({

@@ -207,6 +207,7 @@ class IBKRBrokerAdapter(BaseBrokerAdapter):
         self.registry = registry or FuturesContractRegistry()
         self._ib: Any = None
         self._orders: dict[str, Order] = {}
+        self._ib_orders: dict[str, Any] = {}
         self._fill_cursor: dict[str, int] = {}
         # Tracked contracts for roll detection: symbol → expiry datetime
         self._active_contracts: dict[str, datetime] = {}
@@ -366,12 +367,21 @@ class IBKRBrokerAdapter(BaseBrokerAdapter):
         except Exception as exc:
             raise BrokerNetworkError(f"IBKR placeOrder failed: {exc}") from exc
 
-        order.order_id = str(getattr(getattr(trade, "order", None), "orderId", order.order_id))
+        self._apply_trade_snapshot(order, trade)
+        raw_order = getattr(trade, "order", None)
+        if raw_order is not None:
+            self._ib_orders[order.order_id] = raw_order
+        self._orders[order.order_id] = order
+        return order
+
+    def _apply_trade_snapshot(self, order: Order, trade: Any) -> Order:
+        raw_order = getattr(trade, "order", None)
+        order.order_id = str(getattr(raw_order, "orderId", order.order_id))
         status_obj = getattr(trade, "orderStatus", None)
         status_str = str(getattr(status_obj, "status", "") or "").lower()
         order.status = self._ib_status_to_ours(status_str)
         filled = float(getattr(status_obj, "filled", 0) or 0)
-        if filled > 0:
+        if filled > 0 and not order.fills:
             avg = float(getattr(status_obj, "avgFillPrice", 0) or 0)
             signed = filled if order.side > 0 else -filled
             order.add_fill(Fill(
@@ -383,8 +393,28 @@ class IBKRBrokerAdapter(BaseBrokerAdapter):
                 commission=0.0,
                 exchange="IBKR",
             ))
-        self._orders[order.order_id] = order
         return order
+
+    def _order_from_trade(self, trade: Any) -> Order:
+        raw_order = getattr(trade, "order", None)
+        contract = getattr(trade, "contract", None)
+        action = str(getattr(raw_order, "action", "BUY")).upper()
+        side = 1 if action.startswith("B") else -1
+        order_type = str(getattr(raw_order, "orderType", "MKT")).upper()
+        qty = float(getattr(raw_order, "totalQuantity", 0) or 0)
+        order = Order(
+            order_id=str(getattr(raw_order, "orderId", "")),
+            timestamp=datetime.now(timezone.utc),
+            symbol=str(
+                getattr(contract, "localSymbol", None)
+                or getattr(contract, "symbol", "")
+            ),
+            side=side,
+            order_type=OrderType.LIMIT if order_type == "LMT" else OrderType.MARKET,
+            quantity=qty * side,
+            limit_price=getattr(raw_order, "lmtPrice", None),
+        )
+        return self._apply_trade_snapshot(order, trade)
 
     @staticmethod
     def _ib_status_to_ours(status: str) -> OrderStatus:
@@ -402,11 +432,16 @@ class IBKRBrokerAdapter(BaseBrokerAdapter):
 
     async def cancel_order(self, order_id: str) -> bool:
         order = self._orders.get(order_id)
-        if order is None:
+        raw_order = self._ib_orders.get(order_id)
+        if raw_order is None:
+            raw_order = await self._find_raw_ib_order(order_id)
+            order = self._orders.get(order_id)
+        if raw_order is None:
             return False
         try:
-            await asyncio.to_thread(self.ib.cancelOrder, order)
-            order.status = OrderStatus.CANCELLED
+            await asyncio.to_thread(self.ib.cancelOrder, raw_order)
+            if order is not None:
+                order.status = OrderStatus.CANCELLED
             return True
         except Exception as exc:
             raise BrokerNetworkError(f"IBKR cancelOrder failed: {exc}") from exc
@@ -415,6 +450,32 @@ class IBKRBrokerAdapter(BaseBrokerAdapter):
         if order_id in self._orders:
             return self._orders[order_id]
         raise KeyError(order_id)
+
+    async def get_open_orders(self, symbols: list[str] | None = None) -> list[Order]:
+        try:
+            trades = await asyncio.to_thread(self.ib.openTrades)
+        except Exception as exc:
+            raise BrokerNetworkError(f"IBKR openTrades failed: {exc}") from exc
+        symbol_filter = set(symbols or [])
+        orders: list[Order] = []
+        for trade in trades or []:
+            order = self._order_from_trade(trade)
+            if not order.is_active:
+                continue
+            if symbol_filter and order.symbol not in symbol_filter:
+                continue
+            raw_order = getattr(trade, "order", None)
+            if raw_order is not None:
+                self._ib_orders[order.order_id] = raw_order
+            self._orders.setdefault(order.order_id, order)
+            orders.append(order)
+        return orders
+
+    async def _find_raw_ib_order(self, order_id: str) -> Any | None:
+        for order in await self.get_open_orders():
+            if order.order_id == order_id:
+                return self._ib_orders.get(order_id)
+        return None
 
     async def get_positions(self) -> dict[str, Position]:
         try:

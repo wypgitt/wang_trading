@@ -1,0 +1,154 @@
+name: Production Safety
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  compile-import-config:
+    name: Compile, Import Scan, Config Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install focused dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            numpy pandas scipy sqlalchemy pyyaml python-dotenv loguru \
+            pydantic pydantic-settings prometheus_client scikit-learn \
+            statsmodels arch pykalman pyarrow pytest pytest-asyncio
+      - name: Compile Python sources
+        run: python -m compileall -q src scripts tests
+      - name: Import scan
+        run: |
+          python - <<'PY'
+          import ast
+          import importlib.util
+          from pathlib import Path
+
+          missing = []
+          for root in (Path("src"), Path("scripts")):
+              for path in root.rglob("*.py"):
+                  tree = ast.parse(path.read_text(encoding="utf-8"))
+                  for node in ast.walk(tree):
+                      mod = None
+                      if isinstance(node, ast.Import):
+                          names = [alias.name.split(".")[0] for alias in node.names]
+                      elif isinstance(node, ast.ImportFrom) and node.module:
+                          names = [node.module.split(".")[0]]
+                      else:
+                          names = []
+                      for mod in names:
+                          if mod.startswith("src") and importlib.util.find_spec(mod) is None:
+                              missing.append((str(path), mod))
+          if missing:
+              for path, mod in missing:
+                  print(f"{path}: missing {mod}")
+              raise SystemExit(1)
+          PY
+      - name: Runtime config validation
+        run: |
+          python - <<'PY'
+          from src.bootstrap import load_runtime_config
+          for kind, path in [
+              ("live_trading", "config/live_trading.example.yaml"),
+              ("retrain", "config/retrain.example.yaml"),
+              ("monitoring", "config/monitoring.example.yaml"),
+          ]:
+              load_runtime_config(path, default_name=kind)
+              print(f"{kind}: ok")
+          PY
+
+  focused-tests:
+    name: Focused Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install focused dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            numpy pandas scipy sqlalchemy pyyaml python-dotenv loguru \
+            pydantic pydantic-settings prometheus_client scikit-learn \
+            statsmodels arch pykalman pyarrow pytest pytest-asyncio
+      - name: Run focused safety tests
+        run: |
+          pytest -q \
+            tests/test_bootstrap_wiring.py \
+            tests/test_preflight.py \
+            tests/test_gate_orchestrator.py \
+            tests/test_retrain_pipeline.py \
+            tests/test_dashboards.py \
+            tests/test_rehearsal.py \
+            tests/test_live_reconciliation.py \
+            tests/test_operator_kill_switch.py \
+            tests/test_shadow_replay.py \
+            tests/test_stage_telemetry.py \
+            tests/test_daily_ops.py \
+            tests/test_migrations.py \
+            tests/test_cascade.py \
+            tests/test_broker_lifecycle_check.py \
+            tests/test_ibkr_adapter.py \
+            tests/test_local_readiness_rehearsal.py
+
+  bootstrap-smoke:
+    name: Bootstrap Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install focused dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            numpy pandas scipy sqlalchemy pyyaml python-dotenv loguru \
+            pydantic pydantic-settings prometheus_client scikit-learn \
+            statsmodels arch pykalman pyarrow pytest pytest-asyncio
+      - name: Bootstrap entry points load
+        env:
+          DATABASE_URL: sqlite:///ci_bootstrap_smoke.db
+          MLFLOW_TRACKING_URI: sqlite:///ci_mlflow.db
+        run: |
+          python scripts/production_bootstrap_smoke.py --help
+          python -m src.backtesting.gate_orchestrator --symbol AAPL --dry-run
+
+  design-doc-audit:
+    name: Design Doc Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run design conformance audit
+        run: python scripts/design_doc_audit.py --quiet
+
+  mlflow-acceptance:
+    name: MLflow Registry Acceptance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install MLflow acceptance dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pandas scipy sqlalchemy loguru scikit-learn pytest mlflow
+      - name: Train, promote, reload, preflight, infer
+        env:
+          PYTEST_ADDOPTS: ""
+        run: pytest -q -m mlflow_acceptance tests/test_model_registry.py

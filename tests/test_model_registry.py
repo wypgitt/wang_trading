@@ -1,5 +1,6 @@
 """Tests for the MLflow-backed meta-labeler registry."""
 
+import asyncio
 import os
 import tempfile
 from pathlib import Path
@@ -250,3 +251,106 @@ class TestPromoteModel:
         )
         with pytest.raises(ValueError):
             tmp_registry.promote_model(run_id, stage="canary")
+
+
+@pytest.mark.integration
+@pytest.mark.mlflow_acceptance
+def test_mlflow_registry_acceptance_train_promote_reload_preflight_inference(tmp_path):
+    pytest.importorskip("mlflow")
+
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        registry = ModelRegistry(
+            tracking_uri=f"sqlite:///{tmp_path / 'mlflow.db'}",
+            experiment_name="acceptance-meta-labeler",
+        )
+
+        rng = np.random.default_rng(7)
+        idx = pd.date_range("2026-01-01", periods=80, freq="1h", tz="UTC")
+        X = pd.DataFrame(
+            {
+                "f0": rng.normal(size=len(idx)),
+                "f1": rng.normal(size=len(idx)),
+                "signal_side": rng.choice([-1.0, 1.0], size=len(idx)),
+                "signal_confidence": rng.uniform(0.1, 0.9, size=len(idx)),
+            },
+            index=idx,
+        )
+        logits = 1.4 * X["f0"] + 0.8 * X["signal_side"] * X["signal_confidence"]
+        probs = 1.0 / (1.0 + np.exp(-logits.to_numpy()))
+        y = pd.Series((rng.uniform(size=len(idx)) < probs).astype(int), index=idx)
+        labels = pd.DataFrame(
+            {"event_start": idx, "event_end": idx + pd.Timedelta(hours=1)},
+            index=idx,
+        )
+
+        model = MetaLabeler(
+            model_type="random_forest",
+            params={"n_estimators": 25, "max_depth": 4, "min_samples_leaf": 2},
+            calibrate=False,
+        ).fit(X, y)
+
+        run_id = registry.log_training_run(
+            model,
+            X,
+            y,
+            labels,
+            params={
+                "n_training_events": len(X),
+                "gates": {"cpcv": True, "dsr": True, "pbo": True},
+            },
+            metrics={"gate_cpcv": 1.0, "gate_dsr": 1.0, "gate_pbo": 1.0},
+            cv_scores=np.array([0.61, 0.64, 0.63]),
+        )
+        registry.promote_model(run_id, stage="production")
+
+        import mlflow
+
+        alias_version = mlflow.tracking.MlflowClient().get_model_version_by_alias(
+            "acceptance-meta-labeler",
+            "production",
+        )
+        assert alias_version.run_id == run_id
+
+        info = registry.get_production_model()
+        assert info is not None
+        assert info["run_id"] == run_id
+        assert info["source"] == "alias"
+        assert info["alias"] == "production"
+        assert info["gates"] == {"cpcv": True, "dsr": True, "pbo": True}
+        assert info["n_training_events"] == len(X)
+
+        loaded = registry.load_model(run_id)
+        assert loaded.predict_proba(X.iloc[:3]).shape == (3,)
+
+        from src.bootstrap import ModelMetaPipeline
+        from src.execution.preflight import PreflightChecker
+
+        checker = PreflightChecker(
+            model_registry=registry,
+            config={
+                "model": {
+                    "max_age_days": 30,
+                    "min_training_events": 50,
+                    "require_regime_detector": False,
+                }
+            },
+        )
+        checks = asyncio.run(checker.check_model_readiness())
+        assert all(c.passed for c in checks), [(c.name, c.message) for c in checks]
+
+        signals = pd.DataFrame([
+            {
+                "timestamp": idx[0],
+                "symbol": "AAPL",
+                "family": "momentum",
+                "side": 1,
+                "confidence": 0.7,
+            }
+        ])
+        inference = ModelMetaPipeline(loaded).predict(X.iloc[:1], signals)
+        assert not inference.empty
+        assert 0.0 <= float(inference["meta_prob"].iloc[0]) <= 1.0
+    finally:
+        os.chdir(cwd)

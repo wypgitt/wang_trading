@@ -62,6 +62,15 @@ class _PortfolioOptimizer(Protocol):
     def compute_target_portfolio(self, **kwargs) -> pd.DataFrame: ...
 
 
+def _row_count(obj: Any) -> int:
+    if obj is None:
+        return 0
+    try:
+        return int(len(obj))
+    except TypeError:
+        return 0
+
+
 # ── Pipeline ──────────────────────────────────────────────────────────
 
 @dataclass
@@ -133,6 +142,8 @@ class PaperTradingPipeline:
         self._nav_history: list[tuple[datetime, float]] = []
         self._orders_placed_count = 0
         self._orders_filled_count = 0
+        self._last_stage_latency_seconds: dict[str, float] = {}
+        self._last_stage_cost_usd: dict[str, float] = {}
 
     # ── Core cycle ─────────────────────────────────────────────────────
 
@@ -158,19 +169,36 @@ class PaperTradingPipeline:
         bet_sizes = None
         if features is not None:
             if self.signal_battery is not None:
-                signals = self.signal_battery.generate(features)
+                start = time.perf_counter()
+                signals = self._generate_signals(features, bars)
+                self._record_stage_latency(
+                    "signal_generation",
+                    time.perf_counter() - start,
+                )
+                self._record_stage_items(
+                    "signal_generation", "signals", _row_count(signals),
+                )
                 if signals is not None and not signals.empty:
                     for family in signals.get("family", pd.Series(dtype=str)).unique():
                         self.metrics.record_signal(str(family))
             if self.meta_pipeline is not None and signals is not None:
+                start = time.perf_counter()
                 meta = self.meta_pipeline.predict(features, signals)
+                self._record_stage_latency(
+                    "meta_inference",
+                    time.perf_counter() - start,
+                )
+                self._record_stage_items("meta_inference", "rows", _row_count(meta))
                 if meta is not None and "meta_prob" in meta.columns:
                     for p in meta["meta_prob"]:
                         if np.isfinite(p):
                             self.metrics.record_meta_label_prob(float(p))
                     await self._persist_meta_labels(meta, features)
             if self.bet_sizing is not None and meta is not None:
+                start = time.perf_counter()
                 bet_sizes = self.bet_sizing.compute(meta, features)
+                self._record_stage_latency("sizing", time.perf_counter() - start)
+                self._record_stage_items("sizing", "bets", _row_count(bet_sizes))
 
         # 5. Portfolio optimizer
         target = None
@@ -186,23 +214,39 @@ class PaperTradingPipeline:
             except Exception as exc:
                 log.debug("Portfolio optimizer skipped: %s", exc)
                 target = None
+        if target is not None:
+            update_target_weights = getattr(self.metrics, "update_target_weights", None)
+            if callable(update_target_weights):
+                update_target_weights(target)
 
         # 6-7. Execute via OrderManager (handles exits + rebalance + reconcile)
+        start = time.perf_counter()
         summary = await self.order_manager.run_cycle(prices, target=target)
+        self._record_stage_latency("order_routing", time.perf_counter() - start)
 
         # 8. Update metrics
         self.metrics.update_portfolio(pf)
         self._nav_history.append((datetime.now(timezone.utc), pf.nav))
+        all_orders = summary.get("rebalance_orders", []) + summary.get("exits", [])
+        estimated_cost_usd = sum(
+            float(getattr(order, "estimated_cost_usd", 0.0) or 0.0)
+            for order in all_orders
+        )
+        self._record_stage_cost("order_routing", estimated_cost_usd)
+        self._record_stage_items("order_routing", "orders", len(all_orders))
+        submitted = [o for o in all_orders if o.status != OrderStatus.REJECTED]
         filled = [
-            o for o in summary.get("rebalance_orders", []) + summary.get("exits", [])
+            o for o in all_orders
             if o.status == OrderStatus.FILLED
         ]
         rejected = [
-            o for o in summary.get("rebalance_orders", []) + summary.get("exits", [])
+            o for o in all_orders
             if o.status == OrderStatus.REJECTED
         ]
         self._orders_placed_count += len(summary.get("rebalance_orders", []))
         self._orders_filled_count += len(filled)
+        if submitted:
+            self.metrics.record_order_submitted(len(submitted))
         if filled:
             self.metrics.record_order_filled(len(filled))
         if rejected:
@@ -221,8 +265,14 @@ class PaperTradingPipeline:
             await self._handle_drift(drifted, drift_pct)
 
         # 10. Circuit breakers (already run by OrderManager.run_cycle; alert on any)
+        active_breakers = {str(b.action) for b in summary.get("breakers", [])}
+        set_breaker_state = getattr(self.metrics, "set_circuit_breaker_state", None)
+        if callable(set_breaker_state):
+            set_breaker_state("ANY", bool(active_breakers))
         for breaker in summary.get("breakers", []):
             self.metrics.record_circuit_breaker(breaker.action)
+            if callable(set_breaker_state):
+                set_breaker_state(str(breaker.action), True)
             await self.alert_manager.send_alert(
                 self.alert_manager.alert_circuit_breaker(breaker),
             )
@@ -253,6 +303,8 @@ class PaperTradingPipeline:
             "exits": summary.get("exits", []),
             "breakers": summary.get("breakers", []),
             "reconciliation": summary.get("reconciliation", []),
+            "stage_latency_seconds": dict(self._last_stage_latency_seconds),
+            "stage_cost_usd": dict(self._last_stage_cost_usd),
         }
 
     # ── Meta-label persistence (C4) ────────────────────────────────────
@@ -358,11 +410,20 @@ class PaperTradingPipeline:
         max_cycles = self.config.max_cycles
         try:
             while self.running:
+                start = time.perf_counter()
                 bars = await self._fetch_next_bars(symbols)
+                self._record_stage_latency("data_fetch", time.perf_counter() - start)
+                self._record_stage_items("data_fetch", "bars", len(bars))
                 if not bars:
                     await asyncio.sleep(self.config.sleep_seconds)
                     continue
+                start = time.perf_counter()
                 features = await self._compute_features(bars)
+                self._record_stage_latency(
+                    "feature_compute",
+                    time.perf_counter() - start,
+                )
+                self._record_stage_items("feature_compute", "rows", _row_count(features))
                 await self.run_cycle(bars=bars, features=features)
                 if max_cycles is not None and self.cycle_count >= max_cycles:
                     break
@@ -393,10 +454,54 @@ class PaperTradingPipeline:
                  for sym, bar in bars.items()},
                 orient="index",
             )
-            return self.feature_assembler.compute(frame)
+            for name in ("compute", "assemble"):
+                fn = getattr(self.feature_assembler, name, None)
+                if callable(fn):
+                    return fn(frame)
+            raise AttributeError("feature_assembler exposes neither compute nor assemble")
         except Exception as exc:
             log.debug("feature compute failed: %s", exc)
             return None
+
+    def _generate_signals(
+        self,
+        features: pd.DataFrame,
+        bars: dict[str, Any] | None = None,
+    ) -> pd.DataFrame:
+        battery = self.signal_battery
+        if battery is None:
+            return pd.DataFrame()
+        symbol = "UNKNOWN"
+        signal_input = features
+        if bars:
+            try:
+                symbol = next(iter(bars.keys()))
+                signal_input = pd.DataFrame.from_dict(
+                    {
+                        sym: bar.__dict__ if hasattr(bar, "__dict__") else bar
+                        for sym, bar in bars.items()
+                    },
+                    orient="index",
+                )
+            except Exception:
+                signal_input = features
+        for name, frame in (
+            ("generate", signal_input),
+            ("generate_all", signal_input),
+            ("generate", features),
+            ("generate_all", features),
+        ):
+            fn = getattr(battery, name, None)
+            if not callable(fn):
+                continue
+            try:
+                return fn(frame, symbol=symbol)
+            except TypeError:
+                try:
+                    return fn(frame)
+                except TypeError:
+                    continue
+        raise AttributeError("signal_battery exposes neither generate nor generate_all")
 
     # ── Shutdown ───────────────────────────────────────────────────────
 
@@ -429,6 +534,25 @@ class PaperTradingPipeline:
         pf = self.order_manager.portfolio
         log.info("snapshot nav=%.2f cash=%.2f positions=%d",
                  pf.nav, pf.cash, pf.position_count)
+
+    def _record_stage_latency(self, stage: str, seconds: float) -> None:
+        seconds = max(0.0, float(seconds))
+        self._last_stage_latency_seconds[stage] = seconds
+        fn = getattr(self.metrics, "record_stage_latency", None)
+        if callable(fn):
+            fn(stage, seconds)
+
+    def _record_stage_cost(self, stage: str, cost_usd: float) -> None:
+        cost_usd = max(0.0, float(cost_usd))
+        self._last_stage_cost_usd[stage] = cost_usd
+        fn = getattr(self.metrics, "record_stage_cost", None)
+        if callable(fn):
+            fn(stage, cost_usd)
+
+    def _record_stage_items(self, stage: str, item_type: str, n: int | float) -> None:
+        fn = getattr(self.metrics, "record_stage_items", None)
+        if callable(fn):
+            fn(stage, item_type, n)
 
     # ── Performance summary ────────────────────────────────────────────
 
@@ -496,13 +620,15 @@ def main() -> int:  # pragma: no cover — CLI glue only
     args = _parse_args()
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    log.info("Paper trading CLI — asset_class=%s symbols=%s",
-             args.asset_class, args.symbols)
-    log.warning(
-        "The production paper-trading runner wires in the real adapters; "
-        "use the PaperTradingPipeline factory from a project-level bootstrap "
-        "rather than this bare CLI."
-    )
+    from src.bootstrap import build_paper_trading_pipeline
+    ctx = build_paper_trading_pipeline(args.config)
+    if args.symbols:
+        ctx.symbols[:] = [s.strip() for s in args.symbols.split(",") if s.strip()]
+    if args.max_cycles is not None:
+        ctx.pipeline.config.max_cycles = args.max_cycles
+    log.info("Paper trading starting — asset_class=%s symbols=%s",
+             args.asset_class, ctx.symbols)
+    asyncio.run(ctx.pipeline.run(ctx.symbols))
     return 0
 
 

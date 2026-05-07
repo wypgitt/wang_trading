@@ -41,7 +41,9 @@
    flatten:
    ```bash
    sudo -u wang /opt/wang_trading/venv/bin/python \
-       -m src.execution.live_trading --emergency-flatten
+       -m src.execution.live_trading \
+       --config /opt/wang_trading/config/live_trading.yaml \
+       --emergency-flatten
    ```
 3. Freeze deployment; do NOT restart until root cause is known.
 4. Pull the audit log window covering the loss:

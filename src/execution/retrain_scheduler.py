@@ -215,3 +215,19 @@ class RetrainScheduler:
         await self.alert_manager.send_alert(
             Alert(severity=severity, title=title, message=message, source="retrain"),
         )
+
+
+def main() -> int:  # pragma: no cover - CLI glue
+    import argparse
+    import asyncio
+
+    parser = argparse.ArgumentParser("retrain_scheduler")
+    parser.add_argument("--config", type=str, default=None)
+    args = parser.parse_args()
+    from src.bootstrap import run_retrain_scheduler
+    asyncio.run(run_retrain_scheduler(args.config))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

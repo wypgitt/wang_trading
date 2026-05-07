@@ -15,6 +15,7 @@ from src.execution.preflight import (
     PreflightChecker,
     main,
 )
+from src.execution.broker_adapter import PaperBrokerAdapter
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -129,6 +130,29 @@ class TestBrokerConnectivity:
         checks = asyncio.run(checker.check_broker_connectivity())
         assert checks[0].passed is False
 
+    def test_paper_broker_counts_as_market_open_for_rehearsal(self):
+        f = MagicMock()
+        b = PaperBrokerAdapter(fill_delay_ms=0)
+        f.heartbeat_all = AsyncMock(return_value={"paper_equities": True})
+        f.get_all_brokers = MagicMock(return_value={"paper_equities": b})
+        checker = PreflightChecker(broker_factory=f)
+        checks = asyncio.run(checker.check_broker_connectivity())
+        market = next(c for c in checks if c.name == "broker.market_open")
+        assert market.passed
+
+    def test_heartbeat_metrics_are_recorded(self):
+        class Metrics:
+            def __init__(self):
+                self.heartbeats = []
+
+            def record_broker_heartbeat(self, name, ok):
+                self.heartbeats.append((name, ok))
+
+        metrics = Metrics()
+        checker = PreflightChecker(broker_factory=_good_factory(), metrics=metrics)
+        asyncio.run(checker.check_broker_connectivity())
+        assert metrics.heartbeats == [("crypto", True)]
+
 
 class TestModelReadiness:
     def test_all_pass(self):
@@ -183,12 +207,34 @@ class TestInfrastructure:
         checks = asyncio.run(checker.check_infrastructure())
         assert all(c.passed for c in checks), [c.name for c in checks if not c.passed]
 
+    def test_probe_values_are_merged(self):
+        class Probe:
+            async def collect(self):
+                return _good_infra()
+
+        checker = PreflightChecker(infra_probe=Probe())
+        checks = asyncio.run(checker.check_infrastructure())
+        assert all(c.passed for c in checks), [c.name for c in checks if not c.passed]
+
     def test_disk_too_full(self):
         infra = _good_infra() | {"db_disk_pct": 95.0}
         checker = PreflightChecker(infra=infra)
         checks = asyncio.run(checker.check_infrastructure())
         db = next(c for c in checks if c.name == "infra.timescaledb")
         assert not db.passed
+
+    def test_feature_freshness_metric_is_recorded(self):
+        class Metrics:
+            def __init__(self):
+                self.freshness = None
+
+            def update_feature_freshness(self, hours):
+                self.freshness = hours
+
+        metrics = Metrics()
+        checker = PreflightChecker(infra=_good_infra(), metrics=metrics)
+        asyncio.run(checker.check_infrastructure())
+        assert metrics.freshness == 2.0
 
 
 class TestRiskLimits:

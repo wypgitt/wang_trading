@@ -60,6 +60,7 @@ DEFAULTS: dict[str, Any] = {
         "max_age_days": 30,
         "min_training_events": 500,
         "required_gates": ("cpcv", "dsr", "pbo"),
+        "require_regime_detector": True,
     },
     "paper": {
         "min_weeks_history": 8,
@@ -79,6 +80,25 @@ DEFAULTS: dict[str, Any] = {
         "dead_mans_switch_max_age_h": 24,
     },
 }
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in base.items():
+        out[key] = _deep_merge(value, {}) if isinstance(value, dict) else value
+    for key, value in (override or {}).items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def _is_paper_broker(broker: Any) -> bool:
+    if type(broker).__name__ == "PaperBrokerAdapter":
+        return True
+    inner = getattr(broker, "inner", None)
+    return inner is not None and type(inner).__name__ == "PaperBrokerAdapter"
 
 
 # ── Checker ───────────────────────────────────────────────────────────────
@@ -104,6 +124,7 @@ class PreflightChecker:
         metrics: Any = None,
         paper_stats: dict[str, Any] | None = None,
         infra: dict[str, Any] | None = None,
+        infra_probe: Any = None,
         risk_config: dict[str, Any] | None = None,
         operator_config: dict[str, Any] | None = None,
         config: dict[str, Any] | None = None,
@@ -114,9 +135,10 @@ class PreflightChecker:
         self.metrics = metrics
         self.paper_stats = paper_stats or {}
         self.infra = infra or {}
+        self.infra_probe = infra_probe
         self.risk_config = risk_config or {}
         self.operator_config = operator_config or {}
-        self.config = {**DEFAULTS, **(config or {})}
+        self.config = _deep_merge(DEFAULTS, config or {})
 
     # ── Public API ────────────────────────────────────────────────────
 
@@ -178,6 +200,10 @@ class PreflightChecker:
         try:
             hb = await asyncio.wait_for(self.broker_factory.heartbeat_all(), timeout)
             hb_check.details = {"results": hb}
+            recorder = getattr(self.metrics, "record_broker_heartbeat", None)
+            if callable(recorder):
+                for name, ok in hb.items():
+                    recorder(str(name), bool(ok))
             hb_check.passed = bool(hb) and all(hb.values())
             hb_check.message = "all brokers healthy" if hb_check.passed else f"failing: {[k for k, v in hb.items() if not v]}"
         except asyncio.TimeoutError:
@@ -248,6 +274,12 @@ class PreflightChecker:
             type(b).__name__ == "CCXTBrokerAdapter" for b in brokers.values()
         ):
             market_open = True
+        # Dry-run and paper-production rehearsal use the in-memory broker while
+        # still exercising the live bootstrap. Treat it as market-open so
+        # preflight does not block an operator rehearsal because there is no SDK
+        # calendar method to call.
+        if not market_open and any(_is_paper_broker(b) for b in brokers.values()):
+            market_open = True
         market_check.passed = market_open
         market_check.message = "at least one market is open" if market_open else "all markets closed"
         out.append(market_check)
@@ -309,6 +341,9 @@ class PreflightChecker:
         if isinstance(trained_at, datetime):
             if trained_at.tzinfo is None:
                 trained_at = trained_at.replace(tzinfo=timezone.utc)
+            update_model_age = getattr(self.metrics, "update_model_age", None)
+            if callable(update_model_age):
+                update_model_age(trained_at)
             age = (_utcnow() - trained_at).days
             age_check.details = {"age_days": age}
             age_check.passed = age <= int(cfg["max_age_days"])
@@ -349,6 +384,11 @@ class PreflightChecker:
             "LSTM regime detector loaded and producing valid predictions",
             severity="blocker",
         )
+        if not bool(cfg.get("require_regime_detector", True)):
+            regime_check.passed = True
+            regime_check.message = "regime detector check disabled by config"
+            out.append(regime_check)
+            return out
         regime = getattr(reg, "regime_detector", None)
         try:
             ok = bool(regime and regime.is_ready())  # duck-typed
@@ -409,7 +449,17 @@ class PreflightChecker:
 
     async def check_infrastructure(self) -> list[PreflightCheck]:
         cfg = self.config["infra"]
-        infra = self.infra or {}
+        infra = dict(self.infra or {})
+        if self.infra_probe is not None:
+            try:
+                probe = getattr(self.infra_probe, "collect", None)
+                probed = probe() if callable(probe) else self.infra_probe()
+                if asyncio.iscoroutine(probed):
+                    probed = await probed
+                if isinstance(probed, dict):
+                    infra.update(probed)
+            except Exception as exc:  # noqa: BLE001
+                infra["probe_error"] = str(exc)
         out: list[PreflightCheck] = []
 
         def _add(name: str, desc: str, passed: bool, msg: str, details: dict | None = None) -> None:
@@ -431,25 +481,32 @@ class PreflightChecker:
         _add(
             "infra.prometheus",
             "Prometheus scrape target healthy",
-            bool(infra.get("prometheus_up", False)), "",
+            bool(infra.get("prometheus_up", False)),
+            str(infra.get("prometheus_error", "")),
         )
         _add(
             "infra.grafana",
             "Grafana server reachable",
-            bool(infra.get("grafana_up", False)), "",
+            bool(infra.get("grafana_up", False)),
+            str(infra.get("grafana_error", "")),
         )
         _add(
             "infra.alerts",
             "Alert channels (Telegram) working",
-            bool(infra.get("alerts_ok", False)), "",
+            bool(infra.get("alerts_ok", False)),
+            str(infra.get("alerts_error", "")),
         )
         _add(
             "infra.mlflow",
             "MLflow tracking server reachable",
-            bool(infra.get("mlflow_up", False)), "",
+            bool(infra.get("mlflow_up", False)),
+            str(infra.get("mlflow_error", "")),
         )
 
         freshness_h = float(infra.get("feature_freshness_h", 9e9))
+        update_feature_freshness = getattr(self.metrics, "update_feature_freshness", None)
+        if callable(update_feature_freshness):
+            update_feature_freshness(freshness_h)
         _add(
             "infra.feature_freshness",
             f"Feature store updated within last {cfg['feature_freshness_max_h']}h",
@@ -557,9 +614,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--full-check", action="store_true", help="Run the full suite")
     parser.add_argument("--check", type=str, default=None,
                         help="Run a single category")
+    parser.add_argument("--config", type=str, default=None,
+                        help="Live trading YAML config path")
     args = parser.parse_args(argv)
 
-    checker = PreflightChecker()  # no deps → every blocker fails — exit code 1
+    if args.config:
+        from src.bootstrap import build_preflight_checker
+        checker = build_preflight_checker(args.config)
+    else:
+        checker = PreflightChecker()  # no deps → every blocker fails — exit code 1
     if args.check:
         checks = asyncio.run(checker.run_category(args.check))
     else:

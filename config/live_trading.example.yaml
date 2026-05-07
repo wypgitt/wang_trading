@@ -32,10 +32,53 @@ ibkr:
   account_id: ""
 
 # Pipeline runtime
+storage:
+  database_url: env:DATABASE_URL
+
+# Runs the exact live bootstrap with paper broker credentials and records
+# every order that would have crossed the live broker boundary.
+paper_rehearsal:
+  enabled: false
+  record_path: logs/paper_production_rehearsal_orders.jsonl
+
+mlflow:
+  tracking_uri: env:MLFLOW_TRACKING_URI
+  experiment_name: meta-labeler
+
+circuit_breakers:
+  max_order_pct: 0.05
+  daily_loss_limit_pct: 0.02
+  max_positions: 20
+  max_single_position_pct: 0.10
+  max_gross_exposure: 1.50
+  max_crypto_pct: 0.30
+  dd_throttle_50: 0.10
+  dd_throttle_75: 0.15
+  dd_halt: 0.20
+
+monitoring:
+  prometheus_url: http://127.0.0.1:9090/-/healthy
+  grafana_url: http://127.0.0.1:3000/api/health
+  telegram:
+    enabled: false
+    bot_token: env:TELEGRAM_BOT_TOKEN
+    chat_id: env:TELEGRAM_CHAT_ID
+
+infra:
+  probe_timeout_s: 3.0
+  db_disk_path: /var/lib/postgresql
+  feature_store_path: ./data/features
+  alert_ping_enabled: true
+
 pipeline:
   drift_check_every: 100
   snapshot_every: 50
   sleep_seconds: 1.0
   regime: null
+
+preflight:
+  model:
+    # Keep false until a trained regime detector is wired into ModelRegistry.
+    require_regime_detector: false
 
 # Divergence/promotion cadence handled by the runner; no tuning required here.

@@ -14,7 +14,8 @@ crypto trades 24/7 so the weekend section applies there.
 2. **Preflight.** Run the full check; expect exit 0.
    ```bash
    sudo -u wang /opt/wang_trading/venv/bin/python \
-       -m src.execution.preflight --full-check
+       -m src.execution.preflight --full-check \
+       --config /opt/wang_trading/config/live_trading.yaml
    ```
    Any blocker → STOP. Do not proceed with live trading until resolved.
 
@@ -30,7 +31,24 @@ crypto trades 24/7 so the weekend section applies there.
 5. **Model age + gates.** Preflight covers this; spot-check MLflow for
    the latest production run ID.
 
-6. **Review overnight alerts.** Telegram channel → acknowledge or escalate.
+6. **Shadow replay.** Replay recent bars through the exact live target stack:
+   ```bash
+   sudo -u wang /opt/wang_trading/venv/bin/python \
+       /opt/wang_trading/scripts/shadow_replay.py \
+       --config /opt/wang_trading/config/live_trading.yaml \
+       --output /opt/wang_trading/logs/shadow_replay_report.md
+   ```
+   A FAIL means do not start live trading until the target violation is understood.
+
+7. **Paper/live divergence.** Generate the morning operator report:
+   ```bash
+   sudo -u wang /opt/wang_trading/venv/bin/python \
+       -m src.execution.daily_ops --paper-live-divergence \
+       --paper-returns-csv /opt/wang_trading/logs/paper_returns.csv \
+       --live-returns-csv /opt/wang_trading/logs/live_returns.csv
+   ```
+
+8. **Review overnight alerts.** Telegram channel → acknowledge or escalate.
 
 ## Intraday
 
@@ -78,3 +96,27 @@ sudo systemctl stop wang-live-trading
 ```
 This writes `.live_halt`. The next operator must remove it + re-run
 preflight before restarting.
+
+## Kill-switch commands
+
+- Halt new live starts:
+  ```bash
+  sudo -u wang /opt/wang_trading/venv/bin/python \
+      -m src.execution.live_trading \
+      --config /opt/wang_trading/config/live_trading.yaml \
+      --halt --halt-reason operator_halt
+  ```
+- Flatten and halt:
+  ```bash
+  sudo -u wang /opt/wang_trading/venv/bin/python \
+      -m src.execution.live_trading \
+      --config /opt/wang_trading/config/live_trading.yaml \
+      --flatten
+  ```
+- Verify flat:
+  ```bash
+  sudo -u wang /opt/wang_trading/venv/bin/python \
+      -m src.execution.live_trading \
+      --config /opt/wang_trading/config/live_trading.yaml \
+      --verify-flat
+  ```

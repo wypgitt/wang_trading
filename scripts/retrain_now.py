@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """CLI wrapper for `RetrainPipeline.run` (C2).
 
-Wires a bootstrap — the actual factory-of-factories is project-specific and
-should live in the main runner. This script is a minimal driver so operators
-can fire a manual retrain without writing Python.
+Uses `src.bootstrap.build_retrain_pipeline` so operators can fire a manual
+retrain without writing Python.
 
 Usage:
     python scripts/retrain_now.py --symbol AAPL
@@ -33,24 +32,25 @@ def _parse_args() -> argparse.Namespace:
                    default="manual")
     p.add_argument("--reason", type=str, default="",
                    help="Required for --trigger emergency")
+    p.add_argument("--config", type=str, default=None,
+                   help="Optional retrain YAML config path")
     return p.parse_args()
 
 
 async def _dispatch(args: argparse.Namespace) -> int:
-    # The project-level bootstrap is responsible for wiring the real
-    # feature assembler / signal battery / gate / registry. This CLI
-    # simply surfaces the API so operators don't write glue.
+    # src.bootstrap wires the real feature assembler / signal battery /
+    # gate / registry.
     try:
         from src.bootstrap import build_retrain_pipeline  # type: ignore
-    except ImportError:
+    except ImportError as exc:
         print(
-            "ERROR: src.bootstrap.build_retrain_pipeline() not found. "
-            "Wire it in the project bootstrap to use this CLI.",
+            "ERROR: src.bootstrap.build_retrain_pipeline() unavailable: "
+            f"{exc}",
             file=sys.stderr,
         )
         return 2
 
-    pipeline, data_loader, universe = build_retrain_pipeline()
+    pipeline, data_loader, universe = build_retrain_pipeline(args.config)
 
     if args.all:
         runs = await pipeline.run_all_symbols(universe, data_loader)

@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Sequence
 
+import numpy as np
 import pandas as pd
 
 log = logging.getLogger(__name__)
@@ -156,8 +157,8 @@ class RetrainPipeline:
         *, bypass_threshold: bool,
     ) -> None:
         # 1-3. Features → signals → labels
-        features = await _maybe_await(self.feature_assembler.compute(bars))
-        signals = await _maybe_await(self.signal_battery.generate(features))
+        features = await _compute_features(self.feature_assembler, bars)
+        signals = await _generate_signals(self.signal_battery, bars, features, run.symbol)
         X, y, sw = self.meta_labeling_pipeline.prepare_training_data(
             close, signals, features,
         )
@@ -204,7 +205,14 @@ class RetrainPipeline:
             return
 
         # 8-10. Register + promote
-        new_run_id = self._register_and_promote(new_model, run.cv_score, gate_result)
+        new_run_id = self._register_and_promote(
+            new_model,
+            run.cv_score,
+            gate_result,
+            X,
+            y,
+            sw,
+        )
         run.new_version = new_run_id
         run.promoted = True
 
@@ -257,7 +265,13 @@ class RetrainPipeline:
         return {"passed": False, "failing_gates": ["gate_unavailable"]}
 
     def _register_and_promote(
-        self, model: Any, cv_score: float, gate_result: dict[str, Any],
+        self,
+        model: Any,
+        cv_score: float,
+        gate_result: dict[str, Any],
+        X: pd.DataFrame,
+        y: pd.Series,
+        sample_weight: pd.Series,
     ) -> str | None:
         reg = self.registry
         if reg is None:
@@ -266,11 +280,21 @@ class RetrainPipeline:
         log_fn = getattr(reg, "log_training_run", None)
         if callable(log_fn):
             try:
+                gates = _gate_flags(gate_result)
                 run_id = log_fn(
-                    model=model, params={}, metrics={
+                    model=model,
+                    X=X,
+                    y=y,
+                    labels_df=pd.DataFrame({"label": y}, index=y.index),
+                    params={
+                        "source": "retrain_pipeline",
+                        "gates": gates,
+                    },
+                    cv_scores=np.array([cv_score], dtype=float),
+                    sample_weight=sample_weight,
+                    metrics={
                         "cv_score": cv_score,
-                        **{f"gate_{k}": v for k, v in gate_result.items()
-                           if isinstance(v, (int, float, bool))},
+                        **{f"gate_{k}": float(v) for k, v in gates.items()},
                     },
                 )
             except Exception as exc:
@@ -320,6 +344,39 @@ async def _maybe_await(x: Any) -> Any:
     return x
 
 
+async def _compute_features(feature_assembler: Any, bars: pd.DataFrame) -> pd.DataFrame:
+    for name in ("compute", "assemble"):
+        fn = getattr(feature_assembler, name, None)
+        if callable(fn):
+            return await _maybe_await(fn(bars))
+    raise AttributeError("feature_assembler must expose compute() or assemble()")
+
+
+async def _generate_signals(
+    signal_battery: Any,
+    bars: pd.DataFrame,
+    features: pd.DataFrame,
+    symbol: str,
+) -> pd.DataFrame:
+    for name, args in (
+        ("generate", (bars,)),
+        ("generate_all", (bars,)),
+        ("generate", (features,)),
+        ("generate_all", (features,)),
+    ):
+        fn = getattr(signal_battery, name, None)
+        if not callable(fn):
+            continue
+        try:
+            return await _maybe_await(fn(*args, symbol=symbol))
+        except TypeError:
+            try:
+                return await _maybe_await(fn(*args))
+            except TypeError:
+                continue
+    raise AttributeError("signal_battery must expose generate() or generate_all()")
+
+
 def _version_of(incumbent: Any) -> str | None:
     if incumbent is None:
         return None
@@ -344,3 +401,18 @@ def _coerce_gate_result(result: Any) -> dict[str, Any]:
         failing = out.get("failing_gates") or []
         out["passed"] = not failing
     return out
+
+
+def _gate_flags(gate_result: dict[str, Any]) -> dict[str, bool]:
+    """Normalize gate orchestrator output to preflight's cpcv/dsr/pbo flags."""
+
+    def _passed(value: Any) -> bool:
+        if isinstance(value, dict):
+            return bool(value.get("passed", False))
+        return bool(value)
+
+    return {
+        "cpcv": _passed(gate_result.get("gate_1_cpcv", gate_result.get("cpcv"))),
+        "dsr": _passed(gate_result.get("gate_2_dsr", gate_result.get("dsr"))),
+        "pbo": _passed(gate_result.get("gate_3_pbo", gate_result.get("pbo"))),
+    }

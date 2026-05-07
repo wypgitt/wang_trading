@@ -343,6 +343,10 @@ class DatabaseManager:
         rows: list[dict] = []
         for _, row in labels_df.iterrows():
             payload = {col: row.get(col) for col in self._LABEL_COLUMNS}
+            if payload.get("return_pct") is None:
+                payload["return_pct"] = row.get("return")
+            if payload.get("holding_period_bars") is None:
+                payload["holding_period_bars"] = row.get("holding_period")
             rows.append(payload)
         cols = ", ".join(self._LABEL_COLUMNS)
         placeholders = ", ".join(f":{c}" for c in self._LABEL_COLUMNS)

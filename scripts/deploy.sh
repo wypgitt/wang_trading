@@ -62,7 +62,7 @@ sudo -u "${SERVICE_USER}" "${INSTALL_DIR}/venv/bin/pip" install \
 
 # 5. Config: seed from examples but do not overwrite operator-edited files
 echo "==> Seeding config from examples (no overwrite)"
-for f in settings live_trading futures_contracts paper_trading; do
+for f in settings live_trading futures_contracts paper_trading retrain monitoring; do
     ex="${INSTALL_DIR}/config/${f}.example.yaml"
     yml="${INSTALL_DIR}/config/${f}.yaml"
     if [[ -f "${ex}" && ! -f "${yml}" ]]; then
@@ -71,6 +71,13 @@ for f in settings live_trading futures_contracts paper_trading; do
         chmod 0640 "${yml}"
     fi
 done
+if [[ -f "${INSTALL_DIR}/config/live_trading.env.example" \
+      && ! -f "${INSTALL_DIR}/config/live_trading.env" ]]; then
+    cp "${INSTALL_DIR}/config/live_trading.env.example" \
+       "${INSTALL_DIR}/config/live_trading.env"
+    chown "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}/config/live_trading.env"
+    chmod 0640 "${INSTALL_DIR}/config/live_trading.env"
+fi
 
 # 6. Systemd unit
 echo "==> Installing systemd unit"
@@ -111,13 +118,15 @@ cat <<INSTRUCTIONS
 Manual next steps (operator):
 
   1. Edit /opt/wang_trading/config/live_trading.yaml — fill API keys.
-  2. Edit /opt/wang_trading/config/live_trading.env — export
+  2. Review /opt/wang_trading/config/retrain.yaml and monitoring.yaml.
+  3. Edit /opt/wang_trading/config/live_trading.env — export
      WANG_ALLOW_LIVE_TRADING=yes (or the crypto/futures variant) only when
      you really intend to trade live.
-  3. Run preflight:
+  4. Run preflight:
        sudo -u ${SERVICE_USER} /opt/wang_trading/venv/bin/python \
-           -m src.execution.preflight --full-check
-  4. When every blocker passes and you're ready:
+           -m src.execution.preflight --full-check \
+           --config /opt/wang_trading/config/live_trading.yaml
+  5. When every blocker passes and you're ready:
        sudo systemctl start wang-live-trading
        sudo journalctl -u wang-live-trading -f
 
@@ -125,6 +134,13 @@ Manual next steps (operator):
        sudo systemctl stop wang-live-trading
   Emergency flatten:
        sudo -u ${SERVICE_USER} /opt/wang_trading/venv/bin/python \
-           -m src.execution.live_trading --emergency-flatten
+           -m src.execution.live_trading \
+           --config /opt/wang_trading/config/live_trading.yaml \
+           --emergency-flatten
+  Verify flat:
+       sudo -u ${SERVICE_USER} /opt/wang_trading/venv/bin/python \
+           -m src.execution.live_trading \
+           --config /opt/wang_trading/config/live_trading.yaml \
+           --verify-flat
 
 INSTRUCTIONS

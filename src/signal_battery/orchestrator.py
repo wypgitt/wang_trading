@@ -121,6 +121,21 @@ class SignalBattery:
         """List the names of all registered signal generators."""
         return [r.name for r in self._registry]
 
+    def generate(
+        self,
+        bars: pd.DataFrame,
+        event_timestamps: pd.DatetimeIndex | list | None = None,
+        symbol: str = "UNKNOWN",
+        **context: Any,
+    ) -> pd.DataFrame:
+        """Compatibility alias used by production orchestrators."""
+        return self.generate_all(
+            bars,
+            event_timestamps=event_timestamps,
+            symbol=symbol,
+            **context,
+        )
+
     def generate_all(
         self,
         bars: pd.DataFrame,

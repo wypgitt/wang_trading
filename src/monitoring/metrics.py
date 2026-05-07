@@ -9,7 +9,7 @@ Grafana scraping.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from prometheus_client import (
     CollectorRegistry,
@@ -28,6 +28,9 @@ _SLIPPAGE_BUCKETS: tuple[float, ...] = (
 )
 # Meta-label probability buckets (0.0–1.0).
 _PROB_BUCKETS: tuple[float, ...] = tuple(i / 10 for i in range(11))
+_STAGE_LATENCY_BUCKETS: tuple[float, ...] = (
+    0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+)
 
 
 class MetricsCollector:
@@ -62,6 +65,12 @@ class MetricsCollector:
         self.positions_count = Gauge(
             f"{ns}_positions_count", "Open position count", registry=reg,
         )
+        self.target_weight = Gauge(
+            f"{ns}_target_weight",
+            "Target portfolio weight by symbol and strategy",
+            ["symbol", "strategy"],
+            registry=reg,
+        )
 
         # ── Order counters ──
         self.orders_submitted = Counter(
@@ -94,6 +103,25 @@ class MetricsCollector:
             "Execution slippage distribution (bps)",
             buckets=_SLIPPAGE_BUCKETS, registry=reg,
         )
+        self.stage_latency_seconds = Histogram(
+            f"{ns}_stage_latency_seconds",
+            "Pipeline stage latency in seconds",
+            ["stage"],
+            buckets=_STAGE_LATENCY_BUCKETS,
+            registry=reg,
+        )
+        self.stage_cost_usd = Counter(
+            f"{ns}_stage_cost_usd_total",
+            "Estimated dollar cost attributed to a pipeline stage",
+            ["stage"],
+            registry=reg,
+        )
+        self.stage_items = Counter(
+            f"{ns}_stage_items_total",
+            "Items processed by pipeline stage",
+            ["stage", "item_type"],
+            registry=reg,
+        )
 
         # ── Data pipeline ──
         self.bar_formation_rate = Gauge(
@@ -110,6 +138,11 @@ class MetricsCollector:
             f"{ns}_feature_drift_kl",
             "KL divergence vs training distribution", ["feature"], registry=reg,
         )
+        self.feature_freshness_hours = Gauge(
+            f"{ns}_feature_freshness_hours",
+            "Hours since the latest feature-store update",
+            registry=reg,
+        )
 
         # ── Model ──
         self.model_last_retrain_age_hours = Gauge(
@@ -117,10 +150,24 @@ class MetricsCollector:
             "Hours since last model retrain", registry=reg,
         )
 
+        # ── Broker / ops ──
+        self.broker_heartbeat = Gauge(
+            f"{ns}_broker_heartbeat",
+            "Broker heartbeat state (1=healthy, 0=unhealthy)",
+            ["broker"],
+            registry=reg,
+        )
+
         # ── Circuit breakers ──
         self.circuit_breaker_triggers = Counter(
             f"{ns}_circuit_breaker_triggers",
             "Circuit breaker triggers", ["breaker_type"], registry=reg,
+        )
+        self.circuit_breaker_state = Gauge(
+            f"{ns}_circuit_breaker_state",
+            "Circuit breaker active state (1=active, 0=inactive)",
+            ["breaker_type"],
+            registry=reg,
         )
 
         self._server_started = False
@@ -134,6 +181,19 @@ class MetricsCollector:
         self.portfolio_gross_exposure.set(state.gross_exposure)
         self.portfolio_net_exposure.set(state.net_exposure)
         self.positions_count.set(state.position_count)
+
+    def update_target_weights(self, target: Any) -> None:
+        if target is None or not hasattr(target, "iterrows"):
+            return
+        columns = set(getattr(target, "columns", []))
+        if "symbol" not in columns or "target_weight" not in columns:
+            return
+        for _, row in target.iterrows():
+            strategy = str(row.get("strategy", "default") or "default")
+            self.target_weight.labels(
+                symbol=str(row["symbol"]),
+                strategy=strategy,
+            ).set(float(row["target_weight"]))
 
     def record_order_submitted(self, n: int = 1) -> None:
         self.orders_submitted.inc(n)
@@ -153,8 +213,24 @@ class MetricsCollector:
     def record_fill(self, slippage_bps: float) -> None:
         self.execution_slippage_bps.observe(abs(slippage_bps))
 
+    def record_stage_latency(self, stage: str, seconds: float) -> None:
+        self.stage_latency_seconds.labels(stage=stage).observe(max(0.0, float(seconds)))
+
+    def record_stage_cost(self, stage: str, cost_usd: float) -> None:
+        value = max(0.0, float(cost_usd))
+        if value:
+            self.stage_cost_usd.labels(stage=stage).inc(value)
+
+    def record_stage_items(self, stage: str, item_type: str, n: int | float) -> None:
+        value = max(0.0, float(n))
+        if value:
+            self.stage_items.labels(stage=stage, item_type=item_type).inc(value)
+
     def record_feature_drift(self, feature: str, kl_divergence: float) -> None:
         self.feature_drift_kl.labels(feature=feature).set(kl_divergence)
+
+    def update_feature_freshness(self, hours: float) -> None:
+        self.feature_freshness_hours.set(float(hours))
 
     def record_bar_rate(self, symbol: str, bars_per_hour: float) -> None:
         self.bar_formation_rate.labels(symbol=symbol).set(bars_per_hour)
@@ -164,6 +240,14 @@ class MetricsCollector:
 
     def record_circuit_breaker(self, breaker_type: str, n: int = 1) -> None:
         self.circuit_breaker_triggers.labels(breaker_type=breaker_type).inc(n)
+
+    def set_circuit_breaker_state(self, breaker_type: str, active: bool) -> None:
+        self.circuit_breaker_state.labels(breaker_type=breaker_type).set(
+            1.0 if active else 0.0
+        )
+
+    def record_broker_heartbeat(self, broker: str, ok: bool) -> None:
+        self.broker_heartbeat.labels(broker=broker).set(1.0 if ok else 0.0)
 
     def update_model_age(self, last_retrain: datetime) -> None:
         now = datetime.now(timezone.utc)

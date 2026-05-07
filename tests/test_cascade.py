@@ -433,3 +433,19 @@ class TestBatch:
         )
         assert out.loc[0, "final_size"] == 0.0
         assert "no_feature_history" in out.loc[0, "constraints_applied"]
+
+    def test_batch_aligns_naive_signals_to_aware_feature_index(self):
+        cascade = _default_cascade()
+        features = pd.DataFrame(
+            {"current_vol": [0.02, 0.02], "avg_vol": [0.02, 0.02]},
+            index=pd.date_range("2024-01-01", periods=2, freq="1h", tz="UTC"),
+        )
+        signals = pd.DataFrame({
+            "timestamp": [pd.Timestamp("2024-01-01 00:30:00")],
+            "symbol": ["AAPL"], "family": ["ts_momentum"],
+            "side": [1], "prob": [0.85],
+        })
+        out = cascade.compute_position_sizes_batch(
+            signals, features, portfolio_state={"nav": 1e6},
+        )
+        assert out.loc[0, "final_size"] > 0.0

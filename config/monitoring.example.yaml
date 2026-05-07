@@ -1,0 +1,10 @@
+# Monitoring service configuration.
+# Copy to config/monitoring.yaml and edit for your environment.
+
+monitoring:
+  metrics_port: 9090
+  log_level: INFO
+  telegram:
+    enabled: false
+    bot_token: env:TELEGRAM_BOT_TOKEN
+    chat_id: env:TELEGRAM_CHAT_ID

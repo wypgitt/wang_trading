@@ -1,0 +1,33 @@
+# Retrain scheduler/runtime configuration.
+# Copy to config/retrain.yaml and edit for your environment.
+
+asset_class: equities
+symbols: [AAPL, MSFT, GOOGL]
+bar_type: tib
+limit: 100000
+
+storage:
+  database_url: env:DATABASE_URL
+
+mlflow:
+  tracking_uri: env:MLFLOW_TRACKING_URI
+  experiment_name: meta-labeler
+
+model:
+  type: lightgbm
+
+meta_labeling: {}
+features: {}
+signals: {}
+
+retrain_interval_days: 7
+min_new_bars: 100
+scheduler_interval_s: 3600
+min_improvement_pct: 0.05
+
+monitoring:
+  log_level: INFO
+  telegram:
+    enabled: false
+    bot_token: env:TELEGRAM_BOT_TOKEN
+    chat_id: env:TELEGRAM_CHAT_ID

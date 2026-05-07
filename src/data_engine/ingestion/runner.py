@@ -248,8 +248,11 @@ def _create_adapter(asset_class: str) -> BaseAdapter:
             testnet=settings.data_sources.binance.testnet,
         )
     elif asset_class == "futures":
-        raise NotImplementedError(
-            "IBKR adapter not yet implemented — coming in Phase 5"
+        from src.data_engine.ingestion.adapters.ibkr import IBKRFuturesAdapter
+        return IBKRFuturesAdapter(
+            host=settings.data_sources.ibkr.host,
+            port=settings.data_sources.ibkr.port,
+            client_id=settings.data_sources.ibkr.client_id,
         )
     else:
         raise ValueError(f"Unsupported asset class: {asset_class}")

@@ -16,6 +16,7 @@ symbol's candidate model before it ships.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -231,6 +232,8 @@ def _cli(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--symbol", type=str, help="Single symbol to validate")
+    parser.add_argument("--config", type=str, default=None,
+                        help="Retrain YAML config path")
     parser.add_argument(
         "--all-symbols", action="store_true", help="Sweep the configured universe"
     )
@@ -250,9 +253,10 @@ def _cli(argv: list[str] | None = None) -> int:
     if not args.symbol and not args.all_symbols:
         parser.error("either --symbol SYMBOL or --all-symbols is required")
 
-    symbols = (
-        [args.symbol] if args.symbol else _load_configured_universe()
-    )
+    symbols = [args.symbol] if args.symbol else _load_configured_universe(args.config)
+    if not symbols:
+        print("Gate orchestrator CLI failed: configured universe is empty", file=sys.stderr)
+        return 2
     logger.info(
         f"gate-orchestrator: symbols={symbols} "
         f"mode={'full' if args.full_validation else 'quick'} "
@@ -264,21 +268,149 @@ def _cli(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    # Full loader wiring is deferred to the downstream pipeline (Phase 5);
-    # this CLI currently prints a stub message so the entry point exists
-    # and is callable from cron.
-    print(
-        "Gate orchestrator CLI requires the Phase-5 data/model loaders, "
-        "which are not yet wired. Use StrategyGate.validate() from Python "
-        "for now. See docs/phase4_backtesting.md."
+    try:
+        results = _run_configured_validation(
+            symbols,
+            config_path=args.config,
+            full_validation=args.full_validation,
+            n_trials=args.n_trials,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"Gate orchestrator CLI failed: {exc}", file=sys.stderr)
+        return 2
+
+    ok = True
+    for symbol, result in results.items():
+        passed = bool(result.get("passed", False))
+        ok = ok and passed
+        verdict = "PASS" if passed else "FAIL"
+        print(f"[{verdict}] {symbol}: {result.get('recommendation', '')}")
+    return 0 if ok else 1
+
+
+def _load_configured_universe(config_path: str | None = None) -> list[str]:
+    try:
+        from src.bootstrap import _settings, _symbols, load_runtime_config
+
+        runtime = load_runtime_config(config_path, default_name="retrain")
+        settings = _settings()
+        return _symbols(runtime.get("asset_class", "equities"), runtime, settings)
+    except Exception:
+        return []
+
+
+def _run_configured_validation(
+    symbols: list[str],
+    *,
+    config_path: str | None,
+    full_validation: bool,
+    n_trials: int,
+) -> dict[str, dict]:
+    from src.bootstrap import (
+        _database_url,
+        _settings,
+        build_cost_model,
+        load_runtime_config,
     )
-    return 0
+    from src.data_engine.storage.database import DatabaseManager
+    from src.feature_factory.assembler import FeatureAssembler
+    from src.signal_battery.orchestrator import create_default_battery
+    from src.ml_layer.retrain_pipeline import _compute_features, _generate_signals
+
+    runtime = load_runtime_config(config_path, default_name="retrain")
+    settings = _settings()
+    asset_class = runtime.get("asset_class", "equities")
+    bar_type = runtime.get(
+        "bar_type",
+        getattr(getattr(settings.bars, asset_class), "primary_type", "tib"),
+    )
+    db = DatabaseManager(_database_url(runtime, settings))
+    assembler = FeatureAssembler(runtime.get("features"))
+    battery = create_default_battery(runtime.get("signals"))
+    cost_model = build_cost_model(runtime)
+    gate = StrategyGate()
+    results: dict[str, dict] = {}
+
+    for symbol in symbols:
+        bars = db.get_bars(symbol, bar_type, limit=int(runtime.get("limit", 100_000)))
+        if bars.empty:
+            results[symbol] = {
+                "passed": False,
+                "recommendation": f"ITERATE: no bars for {symbol}/{bar_type}",
+            }
+            continue
+        bars["timestamp"] = pd.to_datetime(bars["timestamp"], utc=True)
+        bars = bars.set_index("timestamp").sort_index()
+        close = bars["close"].astype(float).to_frame(symbol)
+        features = asyncio.run(_compute_features(assembler, bars))
+        flat_signals = asyncio.run(_generate_signals(battery, bars, features, symbol))
+        signals = _signals_to_wide(flat_signals, close.index, symbol)
+        bets = _bets_to_wide(flat_signals, close.index, symbol)
+
+        if full_validation:
+            results[symbol] = gate.validate(
+                close=close,
+                features=features,
+                signals=signals,
+                meta_pipeline=lambda *_args, **_kwargs: None,
+                meta_labeler=None,
+                cascade=lambda _signals: bets,
+                cost_model=cost_model,
+                labels_df=None,
+                n_trials=n_trials,
+            )
+        else:
+            bt = gate._build_backtester(cost_model)
+            backtest = bt.run(close=close, signals_df=signals, bet_sizes=bets)
+            results[symbol] = gate.quick_validate(backtest, n_trials=n_trials)
+    db.close()
+    return results
 
 
-def _load_configured_universe() -> list[str]:
-    # Lightweight fallback so the CLI stays importable without a full
-    # runtime config. Callers can override via --symbol.
-    return []
+def _signals_to_wide(
+    flat: pd.DataFrame,
+    index: pd.Index,
+    symbol: str,
+) -> pd.DataFrame:
+    if flat is None or flat.empty:
+        return pd.DataFrame(0, index=index, columns=[symbol], dtype=int)
+    work = flat.copy()
+    work["timestamp"] = pd.to_datetime(work["timestamp"], utc=True)
+    wide = (
+        work.pivot_table(
+            index="timestamp",
+            columns="symbol",
+            values="side",
+            aggfunc="last",
+        )
+        .reindex(index=index, columns=[symbol])
+        .fillna(0)
+    )
+    return wide.astype(int)
+
+
+def _bets_to_wide(
+    flat: pd.DataFrame,
+    index: pd.Index,
+    symbol: str,
+) -> pd.DataFrame:
+    if flat is None or flat.empty:
+        return pd.DataFrame(0.0, index=index, columns=[symbol])
+    work = flat.copy()
+    work["timestamp"] = pd.to_datetime(work["timestamp"], utc=True)
+    if "confidence" not in work.columns:
+        work["confidence"] = 1.0
+    wide = (
+        work.pivot_table(
+            index="timestamp",
+            columns="symbol",
+            values="confidence",
+            aggfunc="last",
+        )
+        .reindex(index=index, columns=[symbol])
+        .fillna(0.0)
+    )
+    return wide.astype(float).clip(lower=0.0, upper=1.0)
 
 
 if __name__ == "__main__":

@@ -156,6 +156,8 @@ class OrderManager:
         # Cost estimate
         cost_est = self._estimate_cost(order, trade["price"])
         if cost_est is not None:
+            setattr(order, "estimated_cost_usd", float(cost_est.total_cost))
+            setattr(order, "estimated_cost_bps", float(cost_est.cost_bps))
             alpha_bps = self.expected_alpha_bps.get(order.symbol)
             if alpha_bps is not None and alpha_bps > 0:
                 ratio = cost_est.cost_bps / alpha_bps

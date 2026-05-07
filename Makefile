@@ -1,4 +1,4 @@
-.PHONY: help setup test test-integration bench run-equities run-crypto backfill db-up db-down db-setup clean
+.PHONY: help setup test test-integration bench run-equities run-crypto backfill db-up db-down db-setup clean broker-lifecycle-paper local-readiness-rehearsal
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -50,7 +50,7 @@ test: ## Run unit tests (excludes @pytest.mark.integration)
 	pytest tests/ -v
 
 preflight: ## Run pre-flight checks before live trading (P6.05)
-	python -m src.execution.preflight --full-check
+	python -m src.execution.preflight --full-check --config config/live_trading.yaml
 
 audit-conformance: ## Check design-doc conformance (C5). Exit 0 if >= 95%.
 	python scripts/design_doc_audit.py
@@ -58,11 +58,16 @@ audit-conformance: ## Check design-doc conformance (C5). Exit 0 if >= 95%.
 live-start: ## Start the live trading pipeline (P6.07) — requires preflight clean
 	python -m src.execution.live_trading --config config/live_trading.yaml
 
-live-stop: ## Request a graceful shutdown (touches the HALT file)
-	@date -u +"halted_at=%Y-%m-%dT%H:%M:%SZ" > .live_halt && echo "HALT file written: .live_halt"
+live-halt: ## Operator kill switch: write the HALT sentinel
+	python -m src.execution.live_trading --config config/live_trading.yaml --halt --halt-reason operator_halt
 
-live-flatten: ## Emergency-flatten: cancel orders and close all positions
-	python -m src.execution.live_trading --emergency-flatten
+live-stop: live-halt ## Backwards-compatible alias for live-halt
+
+live-flatten: ## Operator kill switch: cancel orders, flatten positions, and halt
+	python -m src.execution.live_trading --config config/live_trading.yaml --flatten
+
+live-verify-flat: ## Verify broker/internal book is flat after a halt or flatten
+	python -m src.execution.live_trading --config config/live_trading.yaml --verify-flat
 
 recover: ## Run disaster recovery against the last snapshot (P6.13)
 	python -m src.execution.disaster_recovery --recover
@@ -70,16 +75,15 @@ recover: ## Run disaster recovery against the last snapshot (P6.13)
 # ── Retraining (Phase 3) ──
 
 retrain: ## Retrain meta-labeler with saved params (usage: make retrain SYMBOL=AAPL)
-	python scripts/retrain_model.py --symbol $(SYMBOL) --use-best-params
+	python scripts/retrain_now.py --config config/retrain.yaml --symbol $(SYMBOL) --trigger manual
 
-retrain-tune: ## Retrain meta-labeler and tune hyperparameters (usage: make retrain-tune SYMBOL=AAPL [N_TRIALS=50] [TIMEOUT=600])
+retrain-tune: ## Research-only retrain + Optuna tuning (usage: make retrain-tune SYMBOL=AAPL [N_TRIALS=50] [TIMEOUT=600])
 	python scripts/retrain_model.py --symbol $(SYMBOL) --tune \
 		--n-trials $(or $(N_TRIALS),50) \
 		--timeout $(or $(TIMEOUT),600)
 
 retrain-all: ## Retrain the full configured universe (usage: make retrain-all [TUNE=1])
-	python scripts/retrain_model.py --all-symbols \
-		$(if $(filter 1,$(TUNE)),--tune --n-trials $(or $(N_TRIALS),50) --timeout $(or $(TIMEOUT),3600),--use-best-params)
+	python scripts/retrain_now.py --config config/retrain.yaml --all --trigger manual
 
 test-bars: ## Run bar constructor tests only
 	pytest tests/test_bar_constructors.py -v
@@ -89,6 +93,23 @@ test-integration: ## Run end-to-end Phase 2 integration test
 
 smoke-test: ## Run end-to-end Phase 5 smoke test (no external services)
 	python3 scripts/smoke_test.py
+
+smoke-production-bootstrap: ## Run validated DB-backed bootstrap smoke without live orders
+	python3 scripts/production_bootstrap_smoke.py --config config/live_trading.yaml
+
+shadow-replay: ## Replay recent bars through live target generation in shadow mode
+	python3 scripts/shadow_replay.py --config config/live_trading.yaml --output logs/shadow_replay_report.md
+
+morning-divergence: ## Generate an operator-readable paper/live divergence report from return CSVs
+	python -m src.execution.daily_ops --paper-live-divergence \
+		--paper-returns-csv logs/paper_returns.csv \
+		--live-returns-csv logs/live_returns.csv
+
+broker-lifecycle-paper: ## Exercise paper broker heartbeat/account/quote/order/cancel/flatten lifecycle
+	python3 scripts/broker_lifecycle_check.py --config config/live_trading.yaml --output logs/broker_lifecycle_paper.json
+
+local-readiness-rehearsal: ## Build local MLflow/DB/probe env and run shadow replay + preflight
+	python3 scripts/local_readiness_rehearsal.py
 
 test-cov: ## Run tests with coverage
 	pytest tests/ -v --cov=src --cov-report=term-missing

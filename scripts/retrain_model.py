@@ -1,8 +1,10 @@
 """
-Meta-labeler retraining orchestrator (design-doc §13 Phase 6: weekly retrain).
+Research-only meta-labeler retraining/tuning orchestrator.
 
-Production entry point that stitches the Phase-3 pipeline together in one
-command:
+Production retraining is wired through ``scripts/retrain_now.py`` and
+``src.bootstrap.build_retrain_pipeline``. This legacy script remains useful
+for research experiments and Optuna tuning, but its promotion gate is not the
+production CPCV/DSR/PBO gate.
 
     python scripts/retrain_model.py --symbol AAPL --tune --n-trials 50
     python scripts/retrain_model.py --symbol AAPL --use-best-params
@@ -20,16 +22,16 @@ The script is responsible for:
     7. Comparing against the incumbent production model.
     8. Logging everything to MLflow and conditionally promoting.
 
-Promotion gate for Phase 3 is a simple mean-CV-accuracy improvement over
-the incumbent. Phase 4 replaces this with the deflated-Sharpe three-gate
-check (CPCV 60 % positive paths, DSR p<0.05, PBO<40 %); that replacement
-lives behind the ``_promotion_gate_phase4_stub`` hook so we just need to
-swap the body when Phase 4 lands.
+Promotion is disabled by default unless ``--allow-research-promotion`` is
+passed or ``WANG_ALLOW_RESEARCH_RETRAIN_PROMOTION=yes`` is set. Operators
+should use ``make retrain`` / ``scripts/retrain_now.py`` for production
+candidate promotion.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import traceback
@@ -285,17 +287,16 @@ def _compute_importances(
 # Promotion gate
 # ---------------------------------------------------------------------------
 
-def _promotion_gate_phase4_stub(
+def _research_promotion_gate(
     challenger_metrics: dict[str, float],
     incumbent_metrics: dict[str, float] | None,
 ) -> tuple[bool, str]:
     """
     Decide whether to promote the challenger.
 
-    **Phase 3 implementation** — simple mean-CV improvement over the
-    incumbent. Phase 4 replaces this stub with the three-gate CPCV / DSR /
-    PBO check (design-doc §9) — keep the call sites stable by swapping
-    the body here.
+    Research-only rule: simple mean-CV improvement over the incumbent. The
+    production path uses ``scripts/retrain_now.py`` and the bootstrap-wired
+    gate stack instead.
     """
     challenger = challenger_metrics.get("mean_cv_score", float("nan"))
     if not np.isfinite(challenger):
@@ -455,7 +456,7 @@ def retrain_symbol(  # noqa: PLR0913 — matches CLI flag layout
         if top:
             incumbent_metrics = top[0]["metrics"]
 
-        promote, reason = _promotion_gate_phase4_stub(metrics, incumbent_metrics)
+        promote, reason = _research_promotion_gate(metrics, incumbent_metrics)
         result["promoted"] = promote
         result["reason"] = reason
 
@@ -540,6 +541,8 @@ def _iter_all_symbols() -> list[str]:
 @click.option("--experiment-name", default="meta-labeler", show_default=True)
 @click.option("--dry-run", is_flag=True,
               help="Log to MLflow but skip the registry promotion.")
+@click.option("--allow-research-promotion", is_flag=True,
+              help="Allow this research-only script to promote in MLflow.")
 @click.option("--log-level", default="INFO", show_default=True,
               type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"]))
 def main(
@@ -561,11 +564,24 @@ def main(
     tracking_uri: str,
     experiment_name: str,
     dry_run: bool,
+    allow_research_promotion: bool,
     log_level: str,
 ) -> None:
-    """Retrain the meta-labeler for one or more symbols."""
+    """Research retrain/tune the meta-labeler for one or more symbols."""
     logger.remove()
     logger.add(sys.stderr, level=log_level)
+
+    promotion_allowed = (
+        allow_research_promotion
+        or os.environ.get("WANG_ALLOW_RESEARCH_RETRAIN_PROMOTION") == "yes"
+    )
+    if not dry_run and not promotion_allowed:
+        logger.warning(
+            "scripts/retrain_model.py is research-only; promotion is disabled. "
+            "Use scripts/retrain_now.py for production promotion, or pass "
+            "--allow-research-promotion for an explicit research override."
+        )
+        dry_run = True
 
     if not symbol and not all_symbols:
         raise click.UsageError("specify --symbol <TICKER> or --all-symbols")

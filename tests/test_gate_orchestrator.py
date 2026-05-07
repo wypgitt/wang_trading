@@ -133,8 +133,8 @@ class TestCLI:
         with pytest.raises(SystemExit):
             _cli([])
 
-    def test_cli_stub_message_printed(self, capsys):
+    def test_cli_loader_failure_is_nonzero(self, capsys):
         rc = _cli(["--symbol", "AAPL"])
-        assert rc == 0
+        assert rc == 2
         captured = capsys.readouterr()
-        assert "Gate orchestrator CLI" in captured.out
+        assert "Gate orchestrator CLI failed" in captured.err

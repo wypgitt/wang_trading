@@ -493,11 +493,11 @@ This runs walk-forward, CPCV (45 paths), Deflated Sharpe, and PBO. See
 # Use the saved-best hyperparameters
 make retrain SYMBOL=AAPL
 
-# Run Optuna hyperparameter search (slow)
+# Run research-only Optuna hyperparameter search (slow)
 make retrain-tune SYMBOL=AAPL N_TRIALS=50
 
 # Whole universe
-make retrain-all TUNE=1
+make retrain-all
 ```
 
 The trained meta-labeler is logged to MLflow and, if validation gates
@@ -646,7 +646,8 @@ sudo -u wang touch /opt/wang_trading/.operator_checkin
 #    paper-trading proof window, infra, risk limits, secrets, …).
 #    Exits 0 only if every check passes.
 cd /opt/wang_trading
-sudo -u wang venv/bin/python -m src.execution.preflight --full-check
+sudo -u wang venv/bin/python -m src.execution.preflight --full-check \
+  --config /opt/wang_trading/config/live_trading.yaml
 
 # 3. If (and only if) preflight exits 0, start
 sudo systemctl start wang-live-trading
@@ -791,8 +792,8 @@ The key touchpoints:
 | `make live-flatten` | Emergency: cancel orders + close positions |
 | `make recover` | Disaster recovery from last state snapshot |
 | `make retrain SYMBOL=AAPL` | Retrain meta-labeler with saved hyperparams |
-| `make retrain-tune SYMBOL=AAPL N_TRIALS=50` | Retrain + Optuna TPE tuning |
-| `make retrain-all TUNE=1` | Retrain the whole configured universe |
+| `make retrain-tune SYMBOL=AAPL N_TRIALS=50` | Research-only retrain + Optuna TPE tuning |
+| `make retrain-all` | Retrain the whole configured universe |
 | `make bench` / `make bench-backtest` | Phase 2 / Phase 4 micro-benchmarks |
 | `make clean` | Remove `__pycache__`, `*.pyc`, `.pytest_cache`, `.coverage` |
 
@@ -825,7 +826,8 @@ wang_trading/
 │   ├── deploy.sh                  # production install (run as root)
 │   ├── smoke_test.py              # Phase 5 end-to-end smoke
 │   ├── production_smoke_test.py   # Phase 6 subsystems smoke
-│   ├── retrain_model.py           # meta-labeler retrain + tune
+│   ├── retrain_now.py             # bootstrap-wired manual retrain
+│   ├── retrain_model.py           # research retrain + tune
 │   ├── replay_prediction.py       # debug a past prediction
 │   └── design_doc_audit.py        # §1–§8 conformance audit
 │

@@ -145,6 +145,38 @@ class FeatureStore:
             return pd.DataFrame()
         return pd.read_parquet(file_path)
 
+    def get_features_at(
+        self,
+        symbol: str,
+        timestamp: datetime,
+        version: str = "v1",
+        method: str = "ffill",
+    ) -> pd.Series:
+        """Return the feature row at or immediately before ``timestamp``."""
+        df = self.load_features(symbol, version)
+        if df.empty:
+            raise KeyError(f"no features for {symbol}/{version}")
+        if "timestamp" in df.columns:
+            df = df.copy()
+            df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+            df = df.set_index("timestamp").sort_index()
+        if not isinstance(df.index, pd.DatetimeIndex):
+            raise KeyError("feature frame has no timestamp column or DatetimeIndex")
+        ts = pd.Timestamp(timestamp)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        else:
+            ts = ts.tz_convert("UTC")
+        if ts in df.index:
+            row = df.loc[ts]
+            return row.iloc[0] if isinstance(row, pd.DataFrame) else row
+        if method != "ffill":
+            raise KeyError(f"no feature row exactly at {ts.isoformat()}")
+        prior = df.loc[df.index <= ts]
+        if prior.empty:
+            raise KeyError(f"no feature row at or before {ts.isoformat()}")
+        return prior.iloc[-1]
+
     def list_symbols(self, data_type: str = "bars") -> list[str]:
         """List all symbols with stored data."""
         dir_path = self.base_path / data_type
