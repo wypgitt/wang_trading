@@ -10,6 +10,7 @@ single theme and is written assuming the reader is the on-call operator at
 | [Incident response](incident_response.md) | Something is wrong right now. |
 | [Deployment](deployment.md) | Shipping new code. Pre-flight → staging → prod → rollback. |
 | [Model operations](model_operations.md) | Retraining, promotion, RL shadow, A/B tests. |
+| [Trade ideas UI](trade_ideas_ui.md) | Start and read the local daily trade ideas browser UI. |
 | [Capital management](capital_management.md) | Phase transitions, adding/withdrawing capital, flatten. |
 | [Compliance](compliance.md) | Tax reporting, audit export/verify, retention. |
 
