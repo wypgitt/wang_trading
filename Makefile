@@ -1,4 +1,4 @@
-.PHONY: help setup test test-integration bench run-equities run-crypto backfill db-up db-down db-setup clean broker-lifecycle-paper local-readiness-rehearsal
+.PHONY: help setup test test-integration bench run-equities run-crypto backfill db-up db-down db-setup clean broker-lifecycle-paper local-readiness-rehearsal trade-ideas-ui
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -110,6 +110,9 @@ broker-lifecycle-paper: ## Exercise paper broker heartbeat/account/quote/order/c
 
 local-readiness-rehearsal: ## Build local MLflow/DB/probe env and run shadow replay + preflight
 	python3 scripts/local_readiness_rehearsal.py
+
+trade-ideas-ui: ## Start the read-only local UI for daily trade ideas
+	python3 scripts/trade_ideas_ui.py --config config/live_trading.yaml
 
 test-cov: ## Run tests with coverage
 	pytest tests/ -v --cov=src --cov-report=term-missing

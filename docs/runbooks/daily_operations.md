@@ -48,7 +48,17 @@ crypto trades 24/7 so the weekend section applies there.
        --live-returns-csv /opt/wang_trading/logs/live_returns.csv
    ```
 
-8. **Review overnight alerts.** Telegram channel → acknowledge or escalate.
+8. **Trade ideas UI.** Open the read-only target view before enabling live
+   trading:
+   ```bash
+   sudo -u wang /opt/wang_trading/venv/bin/python \
+       /opt/wang_trading/scripts/trade_ideas_ui.py \
+       --config /opt/wang_trading/config/live_trading.yaml
+   ```
+   Use `--allow-confidence-fallback` only for paper research when no
+   production MLflow model is available.
+
+9. **Review overnight alerts.** Telegram channel → acknowledge or escalate.
 
 ## Intraday
 
