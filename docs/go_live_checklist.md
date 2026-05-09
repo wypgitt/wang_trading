@@ -64,7 +64,8 @@ When all 17 boxes are ticked, a named operator runs:
 ```bash
 sudo -u wang touch /opt/wang_trading/.operator_checkin
 sudo -u wang /opt/wang_trading/venv/bin/python \
-    -m src.execution.preflight --full-check   # must exit 0
+    -m src.execution.preflight --full-check \
+    --config /opt/wang_trading/config/live_trading.yaml   # must exit 0
 sudo systemctl start wang-live-trading
 sudo journalctl -u wang-live-trading -f
 ```

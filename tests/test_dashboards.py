@@ -60,6 +60,31 @@ class TestMainDashboard:
         for p in data_panels:
             assert p["targets"], f"panel {p['title']} has no targets"
 
+    def test_contains_operational_metrics(self):
+        d = generate_main_dashboard()
+        exprs = {
+            target["expr"]
+            for panel in d["panels"]
+            if panel["type"] != "row"
+            for target in panel["targets"]
+        }
+        expected_fragments = {
+            "wang_trading_signal_count",
+            "wang_trading_meta_label_prob_bucket",
+            "wang_trading_target_weight",
+            "wang_trading_orders_rejected_total",
+            "wang_trading_circuit_breaker_state",
+            "wang_trading_broker_heartbeat",
+            "wang_trading_model_last_retrain_age_hours",
+            "wang_trading_feature_freshness_hours",
+            "wang_trading_stage_latency_seconds_bucket",
+            "wang_trading_stage_cost_usd_total",
+        }
+        assert all(
+            any(fragment in expr for expr in exprs)
+            for fragment in expected_fragments
+        )
+
 
 class TestAlertRules:
     def test_returns_rules(self):

@@ -8,6 +8,7 @@ raises an alert through the configured AlertManager.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -37,6 +38,8 @@ class DailyReconciliation:
         fills_today: list[Order] | None = None,
         tca_results: list[TCAResult] | None = None,
         drift_report: pd.DataFrame | None = None,
+        paper_returns: list[float] | pd.Series | None = None,
+        live_returns: list[float] | pd.Series | None = None,
     ) -> dict:
         now = now or datetime.now(timezone.utc)
         pf = order_manager.portfolio
@@ -59,6 +62,11 @@ class DailyReconciliation:
             if not drift_report.empty and "drifted" in drift_report.columns
             else []
         )
+        divergence = (
+            compute_paper_live_divergence(paper_returns, live_returns)
+            if paper_returns is not None and live_returns is not None
+            else None
+        )
 
         # 5. Persist snapshot
         if execution_storage is not None:
@@ -74,6 +82,7 @@ class DailyReconciliation:
             tca_results=tca_results,
             drift_report=drift_report,
             as_of=now,
+            divergence=divergence,
         )
 
         # 7. Alert on issues
@@ -94,6 +103,7 @@ class DailyReconciliation:
             "discrepancies": discrepancies,
             "tca_summary": tca_summary,
             "drift_flags": drift_flags,
+            "divergence": divergence,
             "report": report,
         }
 
@@ -124,6 +134,7 @@ def generate_daily_report(
     breakers_triggered: list[str] | None = None,
     last_model_retrain: datetime | None = None,
     next_retrain: datetime | None = None,
+    divergence: dict | None = None,
 ) -> str:
     as_of = as_of or datetime.now(timezone.utc)
     drift_report = drift_report if drift_report is not None else pd.DataFrame()
@@ -227,7 +238,94 @@ def generate_daily_report(
     lines.append("## Model")
     lines.append(f"  Last retrain: {model_age} ago")
     lines.append(f"  Next retrain: {next_retrain_str}")
+    lines.append("")
+    lines.append("## Paper/Live Divergence")
+    if divergence is None:
+        lines.append("  No divergence sample supplied")
+    else:
+        lines.append(f"  Status:       {'DIVERGED' if divergence['diverged'] else 'OK'}")
+        lines.append(f"  Paper Sharpe: {divergence['paper_sharpe']:.2f}")
+        lines.append(f"  Live Sharpe:  {divergence['live_sharpe']:.2f}")
+        lines.append(f"  Gap:          {divergence['gap']:.2f}")
+        lines.append(f"  Threshold:    {divergence['threshold']:.2f}")
+        lines.append(f"  Action:       {divergence['operator_action']}")
     return "\n".join(lines)
+
+
+def compute_paper_live_divergence(
+    paper_returns: list[float] | pd.Series,
+    live_returns: list[float] | pd.Series,
+    *,
+    threshold: float = 1.0,
+) -> dict:
+    paper = pd.to_numeric(pd.Series(paper_returns), errors="coerce").dropna()
+    live = pd.to_numeric(pd.Series(live_returns), errors="coerce").dropna()
+    paper = paper[paper.abs() < float("inf")]
+    live = live[live.abs() < float("inf")]
+    n = int(min(len(paper), len(live)))
+    if n == 0:
+        return {
+            "paper_sharpe": 0.0,
+            "live_sharpe": 0.0,
+            "gap": 0.0,
+            "threshold": float(threshold),
+            "diverged": False,
+            "n": 0,
+            "operator_action": "No overlapping returns. Check data capture before trading.",
+        }
+    paper = paper.iloc[-n:]
+    live = live.iloc[-n:]
+    paper_sharpe = _daily_sharpe(paper)
+    live_sharpe = _daily_sharpe(live)
+    gap = abs(paper_sharpe - live_sharpe)
+    diverged = gap > threshold
+    return {
+        "paper_sharpe": paper_sharpe,
+        "live_sharpe": live_sharpe,
+        "gap": gap,
+        "threshold": float(threshold),
+        "diverged": diverged,
+        "n": n,
+        "operator_action": (
+            "HALT new live starts and investigate fills, fees, borrow, and target drift."
+            if diverged
+            else "No action required. Continue normal pre-open checklist."
+        ),
+    }
+
+
+def generate_paper_live_divergence_report(
+    paper_returns: list[float] | pd.Series,
+    live_returns: list[float] | pd.Series,
+    *,
+    as_of: datetime | None = None,
+    threshold: float = 1.0,
+) -> str:
+    as_of = as_of or datetime.now(timezone.utc)
+    result = compute_paper_live_divergence(
+        paper_returns, live_returns, threshold=threshold,
+    )
+    lines = [
+        f"# Morning Paper/Live Divergence - {as_of.date().isoformat()}",
+        "",
+        f"Status: {'DIVERGED' if result['diverged'] else 'OK'}",
+        f"Samples compared: {result['n']}",
+        f"Paper Sharpe: {result['paper_sharpe']:.2f}",
+        f"Live Sharpe: {result['live_sharpe']:.2f}",
+        f"Gap: {result['gap']:.2f} (threshold {result['threshold']:.2f})",
+        "",
+        f"Operator action: {result['operator_action']}",
+    ]
+    return "\n".join(lines)
+
+
+def _daily_sharpe(returns: pd.Series) -> float:
+    if len(returns) < 2:
+        return 0.0
+    std = float(returns.std(ddof=1))
+    if std == 0:
+        return 0.0
+    return float(returns.mean() / std * (252 ** 0.5))
 
 
 # ── CLI ───────────────────────────────────────────────────────────────
@@ -237,19 +335,44 @@ def _parse_args() -> argparse.Namespace:
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--run-reconciliation", action="store_true")
     g.add_argument("--send-daily-report", action="store_true")
+    g.add_argument("--paper-live-divergence", action="store_true")
     p.add_argument("--config", type=str, default=None)
+    p.add_argument("--paper-returns-csv", type=str, default=None)
+    p.add_argument("--live-returns-csv", type=str, default=None)
+    p.add_argument("--return-column", type=str, default="return")
+    p.add_argument("--threshold", type=float, default=1.0)
     return p.parse_args()
+
+
+def _execution_storage_url(ctx) -> str:
+    runtime = getattr(ctx, "runtime_config", {}) or {}
+    return (
+        ((runtime.get("storage") or {}).get("database_url"))
+        or ctx.settings.database.url
+    )
 
 
 def main() -> int:  # pragma: no cover — CLI glue
     args = _parse_args()
     logging.basicConfig(level=logging.INFO)
-    log.info("daily_ops: run_reconciliation=%s send_daily_report=%s",
-             args.run_reconciliation, args.send_daily_report)
-    log.warning(
-        "CLI requires a bootstrapped OrderManager/ExecutionStorage/AlertManager; "
-        "wire this up from your project bootstrap script."
-    )
+    if args.paper_live_divergence:
+        if not args.paper_returns_csv or not args.live_returns_csv:
+            raise SystemExit("--paper-live-divergence requires --paper-returns-csv and --live-returns-csv")
+        paper = pd.read_csv(args.paper_returns_csv)[args.return_column]
+        live = pd.read_csv(args.live_returns_csv)[args.return_column]
+        print(generate_paper_live_divergence_report(
+            paper, live, threshold=args.threshold,
+        ))
+        return 0
+    from src.bootstrap import build_live_trading_pipeline
+    ctx = build_live_trading_pipeline(args.config)
+    storage = ExecutionStorage(_execution_storage_url(ctx))
+    result = asyncio.run(DailyReconciliation().run(
+        ctx.pipeline.order_manager,
+        storage,
+        ctx.pipeline.alert_manager,
+    ))
+    print(result["report"])
     return 0
 
 

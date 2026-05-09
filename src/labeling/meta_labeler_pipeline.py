@@ -295,6 +295,13 @@ class MetaLabelingPipeline:
         labels_df = combined.copy()
         labels_df["symbol"] = symbol
         labels_df["sample_weight"] = weights
+        if "return_pct" not in labels_df.columns and "return" in labels_df.columns:
+            labels_df["return_pct"] = labels_df["return"]
+        if (
+            "holding_period_bars" not in labels_df.columns
+            and "holding_period" in labels_df.columns
+        ):
+            labels_df["holding_period_bars"] = labels_df["holding_period"]
         for col in ("volatility", "upper_barrier", "lower_barrier",
                     "barrier_touched", "return_pct", "holding_period_bars",
                     "vertical_barrier"):

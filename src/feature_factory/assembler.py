@@ -170,6 +170,21 @@ class FeatureAssembler:
 
     # -- public API --
 
+    def compute(
+        self,
+        bars_df: pd.DataFrame,
+        implied_vol: pd.Series | None = None,
+        sentiment_scores: pd.DataFrame | None = None,
+        onchain_features: pd.DataFrame | None = None,
+    ) -> pd.DataFrame:
+        """Compatibility alias used by production orchestrators."""
+        return self.assemble(
+            bars_df,
+            implied_vol=implied_vol,
+            sentiment_scores=sentiment_scores,
+            onchain_features=onchain_features,
+        )
+
     def assemble(
         self,
         bars_df: pd.DataFrame,

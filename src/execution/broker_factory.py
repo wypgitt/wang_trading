@@ -22,6 +22,7 @@ from src.execution.broker_adapter import (
     AlpacaBrokerAdapter,
     BaseBrokerAdapter,
     CCXTBrokerAdapter,
+    PaperBrokerAdapter,
 )
 from src.execution.circuit_breakers import _is_crypto
 from src.execution.ibkr_adapter import FuturesContractRegistry, IBKRBrokerAdapter
@@ -62,6 +63,10 @@ class BrokerFactory:
     ) -> None:
         self.config = config or {}
         self._cache: dict[str, BaseBrokerAdapter] = {}
+        self.dry_run = bool(
+            self.config.get("dry_run")
+            or (self.config.get("broker") or {}).get("adapter") == "paper"
+        )
         self._futures_roots: set[str] = set(futures_roots) if futures_roots else set(
             _DEFAULT_FUTURES_ROOTS
         )
@@ -87,6 +92,8 @@ class BrokerFactory:
         self, symbol: str, asset_class: str | None = None,
     ) -> BaseBrokerAdapter:
         klass = asset_class or self.classify(symbol)
+        if self.dry_run:
+            return self._get_or_create(f"paper_{klass}", self._build_paper)
         if klass == self.ASSET_CRYPTO:
             return self._get_or_create("crypto", self._build_crypto)
         if klass == self.ASSET_FUTURES:
@@ -105,6 +112,16 @@ class BrokerFactory:
             secret_key=cfg.get("secret_key", cfg.get("api_secret", "")),
             paper=bool(cfg.get("paper", True)),
             base_url=cfg.get("base_url"),
+        )
+
+    def _build_paper(self) -> PaperBrokerAdapter:
+        cfg = self.config.get("broker", {}) or {}
+        prices = self.config.get("paper_prices") or {}
+        return PaperBrokerAdapter(
+            initial_cash=float(cfg.get("initial_cash", 100_000.0)),
+            slippage_bps=float(cfg.get("slippage_bps", 2.0)),
+            fill_delay_ms=int(cfg.get("fill_delay_ms", 0)),
+            price_feed=lambda symbol: float(prices.get(symbol, 100.0)),
         )
 
     def _build_crypto(self) -> CCXTBrokerAdapter:

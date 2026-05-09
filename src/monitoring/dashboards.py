@@ -93,6 +93,8 @@ def generate_main_dashboard() -> dict:
               f"{m}_signal_count{{family=~\"regime_.*\"}}", (18, 23, 6, 8))
     add_panel("Model Age (hours)", "gauge",
               f"{m}_model_last_retrain_age_hours", (0, 31, 6, 4))
+    add_panel("Target Weights", "timeseries",
+              f"{m}_target_weight", (6, 31, 12, 4))
 
     # Row 4 — Execution (y=35)
     add_row("Execution", 35)
@@ -112,32 +114,46 @@ def generate_main_dashboard() -> dict:
               f"{m}_orders_filled_total", (20, 40, 2, 4))
     add_panel("Orders Rejected", "stat",
               f"{m}_orders_rejected_total", (22, 40, 2, 4))
+    add_panel("Broker Heartbeat", "stat",
+              f"{m}_broker_heartbeat", (20, 44, 4, 4))
+    add_panel("Stage Latency", "timeseries",
+              f"histogram_quantile(0.95, sum by (stage, le) "
+              f"(rate({m}_stage_latency_seconds_bucket[5m])))",
+              (0, 48, 12, 4))
+    add_panel("Stage Cost", "timeseries",
+              f"sum by (stage) (rate({m}_stage_cost_usd_total[5m]))",
+              (12, 48, 12, 4))
 
-    # Row 5 — Data Health (y=44)
-    add_row("Data Health", 44)
+    # Row 5 — Data Health (y=52)
+    add_row("Data Health", 52)
     add_panel("Bar Formation Rate", "timeseries",
-              f"{m}_bar_formation_rate", (0, 45, 12, 8))
+              f"{m}_bar_formation_rate", (0, 53, 10, 8))
     add_panel("Feature Drift (KL)", "heatmap",
-              f"{m}_feature_drift_kl", (12, 45, 8, 8))
+              f"{m}_feature_drift_kl", (10, 53, 8, 8))
     add_panel("Data Gaps", "timeseries",
-              f"{m}_data_gap_seconds", (20, 45, 4, 8))
+              f"{m}_data_gap_seconds", (18, 53, 3, 8))
+    add_panel("Feature Freshness (h)", "gauge",
+              f"{m}_feature_freshness_hours", (21, 53, 3, 8))
 
-    # Row 6 — Risk (y=53)
-    add_row("Risk", 53)
+    # Row 6 — Risk (y=61)
+    add_row("Risk", 61)
     add_panel(
         "Strategy Allocation", "piechart",
         f"sum by (family) ({m}_signal_count)",
-        (0, 54, 8, 8),
+        (0, 62, 6, 8),
     )
     add_panel(
         "Correlation Matrix", "heatmap",
         "SELECT timestamp, symbol_pair, correlation "
         "FROM correlation_matrix WHERE timestamp > now() - INTERVAL '1 hour'",
-        (8, 54, 8, 8), datasource="TimescaleDB",
+        (6, 62, 7, 8), datasource="TimescaleDB",
     )
     add_panel("Circuit Breaker Triggers", "barchart",
               f"sum by (breaker_type) ({m}_circuit_breaker_triggers)",
-              (16, 54, 8, 8))
+              (13, 62, 6, 8))
+    add_panel("Circuit Breaker State", "stat",
+              f"{m}_circuit_breaker_state",
+              (19, 62, 5, 8))
 
     return {
         "uid": "wang-trading-main",

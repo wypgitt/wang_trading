@@ -22,7 +22,7 @@ Triggered when `model.age` blocker fires or drift causes a SEV3.
 
 ```bash
 sudo -u wang /opt/wang_trading/venv/bin/python \
-    -m src.ml_layer.retrain_scheduler --now
+    scripts/retrain_now.py --all --trigger emergency --reason "model/drift"
 ```
 
 Follow-up:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import sys
 from datetime import datetime, timedelta, timezone
@@ -75,6 +76,58 @@ def _weights(frame: Any) -> dict[str, float]:
     return dict(zip(frame["symbol"], frame["target_weight"].astype(float)))
 
 
+def _status_value(status: Any) -> str:
+    return str(getattr(status, "value", status))
+
+
+def _order_reconciliation_diff(internal: Any, broker_order: Any) -> dict[str, Any] | None:
+    """Return material order/fill mismatches between internal and broker views."""
+
+    fields: dict[str, dict[str, Any]] = {}
+    internal_status = _status_value(getattr(internal, "status", ""))
+    broker_status = _status_value(getattr(broker_order, "status", ""))
+    if internal_status != broker_status:
+        fields["status"] = {"internal": internal_status, "broker": broker_status}
+
+    internal_filled = float(getattr(internal, "filled_quantity", 0.0) or 0.0)
+    broker_filled = float(getattr(broker_order, "filled_quantity", 0.0) or 0.0)
+    if abs(internal_filled - broker_filled) > 1e-9:
+        fields["filled_quantity"] = {
+            "internal": internal_filled,
+            "broker": broker_filled,
+        }
+
+    internal_fills = len(getattr(internal, "fills", []) or [])
+    broker_fills = len(getattr(broker_order, "fills", []) or [])
+    if internal_fills != broker_fills:
+        fields["fills"] = {"internal": internal_fills, "broker": broker_fills}
+
+    if not fields:
+        return None
+    return {
+        "order_id": getattr(internal, "order_id", ""),
+        "symbol": getattr(internal, "symbol", getattr(broker_order, "symbol", "")),
+        "fields": fields,
+    }
+
+
+def write_halt_file(
+    path: Path | str = HALT_FILE,
+    *,
+    reason: str = "operator_halt",
+    emergency: bool = False,
+) -> Path:
+    halt_path = Path(path)
+    halt_path.parent.mkdir(parents=True, exist_ok=True)
+    halt_path.write_text(
+        f"halted_at={datetime.now(timezone.utc).isoformat()}\n"
+        f"reason={reason}\n"
+        f"emergency={emergency}\n",
+        encoding="utf-8",
+    )
+    return halt_path
+
+
 class _ScaledBetSizing:
     """Wraps a bet-sizing component so the deployment multiplier is applied
     to the ``final_size`` column on every compute call."""
@@ -117,6 +170,9 @@ class LiveTradingPipeline(PaperTradingPipeline):
         rl_revert_dd_threshold: float = 0.05,
         rl_revert_window_days: int = 3,
         recovery_manager: Any | None = None,
+        paper_rehearsal: bool = False,
+        rehearsal_recorder: Any | None = None,
+        managed_symbols: list[str] | None = None,
         **kwargs,
     ) -> None:
         # Wrap bet_sizing with the deployment multiplier *before* calling
@@ -141,6 +197,9 @@ class LiveTradingPipeline(PaperTradingPipeline):
         self._last_promotion_check: datetime | None = None
         self._last_eligibility_check: datetime | None = None
         self._emergency_flatten_requested = False
+        self.paper_rehearsal = bool(paper_rehearsal)
+        self.rehearsal_recorder = rehearsal_recorder
+        self.managed_symbols = list(managed_symbols or [])
 
         # RL integration
         self.shadow_rl_agent = shadow_rl_agent
@@ -203,23 +262,30 @@ class LiveTradingPipeline(PaperTradingPipeline):
                 f"(expected file: {self.operator_checkin_path})"
             )
 
+        reconciliation = await self._reconcile_execution_state("startup", strict=True)
+
         # Starting announcement
         phase = self.deployment_controller.get_current_phase()
         await self._send_alert(
             AlertSeverity.CRITICAL,
-            "Live trading starting",
+            "Paper-production rehearsal starting"
+            if self.paper_rehearsal else "Live trading starting",
             f"phase={phase.name} multiplier={phase.position_size_multiplier}",
-            metadata={"phase": phase.to_dict()},
+            metadata={"phase": phase.to_dict(), "paper_rehearsal": self.paper_rehearsal},
         )
         self._log_compliance("startup", {
             "phase": phase.to_dict(),
             "preflight": summary,
+            "reconciliation": reconciliation,
+            "paper_rehearsal": self.paper_rehearsal,
         })
         self._save_snapshot()
         return {
             "phase": phase.to_dict(),
             "preflight": summary,
             "recovery": recovery_summary,
+            "reconciliation": reconciliation,
+            "paper_rehearsal": self.paper_rehearsal,
         }
 
     def _operator_recently_checked_in(self) -> bool:
@@ -369,9 +435,21 @@ class LiveTradingPipeline(PaperTradingPipeline):
     async def shutdown(self, *, emergency: bool = False) -> None:
         self.running = False
         pf = self.order_manager.portfolio
+        pre_reconciliation = await self._reconcile_execution_state(
+            "pre_shutdown", strict=False,
+        )
 
-        # Cancel all open orders
-        for order in list(pf.open_orders):
+        # Cancel every known internal or broker-visible open order.
+        cancel_orders = list(pf.open_orders)
+        internal_ids = {getattr(order, "order_id", "") for order in cancel_orders}
+        try:
+            for order in await self._broker_open_orders():
+                if getattr(order, "order_id", "") not in internal_ids:
+                    cancel_orders.append(order)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("broker open-order lookup failed before cancel: %s", exc)
+
+        for order in cancel_orders:
             try:
                 await self.order_manager.broker.cancel_order(order.order_id)
             except Exception as exc:
@@ -380,6 +458,9 @@ class LiveTradingPipeline(PaperTradingPipeline):
         if emergency or self._emergency_flatten_requested:
             await self._flatten_all(pf)
 
+        post_reconciliation = await self._reconcile_execution_state(
+            "post_shutdown", strict=False,
+        )
         self._save_snapshot()
 
         await self._send_alert(
@@ -393,32 +474,133 @@ class LiveTradingPipeline(PaperTradingPipeline):
             "emergency": emergency,
             "nav": pf.nav,
             "cycles": self.cycle_count,
+            "pre_reconciliation": pre_reconciliation,
+            "post_reconciliation": post_reconciliation,
+            "paper_rehearsal": self.paper_rehearsal,
         })
 
         # Write HALT file — operator must delete before restart.
         try:
-            self.halt_file.parent.mkdir(parents=True, exist_ok=True)
-            self.halt_file.write_text(
-                f"halted_at={datetime.now(timezone.utc).isoformat()}\n"
-                f"emergency={emergency}\n"
+            write_halt_file(
+                self.halt_file,
+                reason="emergency_flatten" if emergency else "pipeline_shutdown",
+                emergency=emergency,
             )
         except Exception as exc:  # pragma: no cover
             log.warning("failed to write HALT file: %s", exc)
 
+    async def _reconcile_execution_state(
+        self,
+        stage: str,
+        *,
+        strict: bool,
+    ) -> dict[str, Any]:
+        """Compare internal orders/positions to broker state."""
+
+        summary: dict[str, Any] = {
+            "stage": stage,
+            "position_diffs": [],
+            "order_diffs": [],
+            "errors": [],
+        }
+        try:
+            summary["position_diffs"] = await self.order_manager.reconcile_positions()
+        except Exception as exc:  # noqa: BLE001
+            summary["errors"].append(f"positions: {exc}")
+
+        broker = self.order_manager.broker
+        for order in list(self.order_manager.portfolio.open_orders):
+            try:
+                broker_order = await broker.get_order_status(order.order_id)
+            except Exception as exc:  # noqa: BLE001
+                summary["order_diffs"].append({
+                    "order_id": order.order_id,
+                    "symbol": order.symbol,
+                    "reason": f"broker order unavailable: {exc}",
+                })
+                continue
+            diff = _order_reconciliation_diff(order, broker_order)
+            if diff:
+                summary["order_diffs"].append(diff)
+
+        internal_ids = {
+            getattr(order, "order_id", "")
+            for order in list(self.order_manager.portfolio.open_orders)
+        }
+        try:
+            broker_open_orders = await self._broker_open_orders()
+        except Exception as exc:  # noqa: BLE001
+            summary["errors"].append(f"open_orders: {exc}")
+            broker_open_orders = []
+        for broker_order in broker_open_orders:
+            order_id = str(getattr(broker_order, "order_id", ""))
+            if order_id in internal_ids:
+                continue
+            if not bool(getattr(broker_order, "is_active", False)):
+                continue
+            summary["order_diffs"].append({
+                "order_id": order_id,
+                "symbol": getattr(broker_order, "symbol", ""),
+                "reason": "broker has active order not present in internal ledger",
+                "status": _status_value(getattr(broker_order, "status", "")),
+            })
+
+        self._log_compliance(f"{stage}_reconciliation", summary)
+        failed = bool(
+            summary["position_diffs"]
+            or summary["order_diffs"]
+            or summary["errors"]
+        )
+        if failed:
+            await self._send_alert(
+                AlertSeverity.CRITICAL if strict else AlertSeverity.WARNING,
+                f"Execution reconciliation issue ({stage})",
+                (
+                    f"positions={len(summary['position_diffs'])} "
+                    f"orders={len(summary['order_diffs'])} "
+                    f"errors={len(summary['errors'])}"
+                ),
+                metadata=summary,
+            )
+        if strict and failed:
+            raise RuntimeError(f"{stage} reconciliation failed: {summary}")
+        return summary
+
+    async def _broker_open_orders(self) -> list[Any]:
+        broker = self.order_manager.broker
+        getter = getattr(broker, "get_open_orders", None)
+        if not callable(getter):
+            return []
+        try:
+            return list(await getter(self.managed_symbols or None))
+        except TypeError:
+            return list(await getter())
+
     async def _flatten_all(self, pf: Any) -> None:
-        """Submit market exit orders for every open position."""
+        """Submit market exit orders for every internal or broker position."""
         from src.execution.models import Order, OrderType
         import uuid
 
-        for symbol, pos in list(pf.positions.items()):
+        positions = dict(getattr(pf, "positions", {}) or {})
+        try:
+            broker_positions = await self.order_manager.broker.get_positions()
+            positions.update(broker_positions)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("broker position lookup failed before flatten: %s", exc)
+
+        for symbol, pos in list(positions.items()):
+            qty = float(getattr(pos, "quantity", 0.0) or 0.0)
+            side = int(getattr(pos, "side", 0) or 0)
+            if qty <= 1e-12 or side == 0:
+                continue
             order = Order(
                 order_id=str(uuid.uuid4()),
                 timestamp=datetime.now(timezone.utc),
                 symbol=symbol,
-                side=-pos.side,
+                side=-side,
                 order_type=OrderType.MARKET,
-                quantity=-pos.side * pos.quantity,
-                signal_family=pos.signal_family,
+                quantity=-side * qty,
+                signal_family=getattr(pos, "signal_family", ""),
             )
             try:
                 await self.order_manager.broker.submit_order(order)
@@ -427,6 +609,68 @@ class LiveTradingPipeline(PaperTradingPipeline):
 
     def request_emergency_flatten(self) -> None:
         self._emergency_flatten_requested = True
+
+    async def verify_flat(self, *, tolerance: float = 1e-9) -> dict[str, Any]:
+        broker = self.order_manager.broker
+        positions = await broker.get_positions()
+        nonzero_positions = [
+            {
+                "symbol": symbol,
+                "signed_qty": float(pos.side * pos.quantity),
+                "quantity": float(pos.quantity),
+                "side": int(pos.side),
+            }
+            for symbol, pos in positions.items()
+            if abs(float(pos.side * pos.quantity)) > tolerance
+        ]
+        internal_positions = [
+            {
+                "symbol": symbol,
+                "signed_qty": float(pos.side * pos.quantity),
+                "quantity": float(pos.quantity),
+                "side": int(pos.side),
+            }
+            for symbol, pos in self.order_manager.portfolio.positions.items()
+            if abs(float(pos.side * pos.quantity)) > tolerance
+        ]
+        internal_open_orders = [
+            {
+                "order_id": order.order_id,
+                "symbol": order.symbol,
+                "status": _status_value(order.status),
+                "quantity": float(order.quantity),
+            }
+            for order in self.order_manager.portfolio.open_orders
+            if bool(getattr(order, "is_active", False))
+        ]
+        broker_order_error = ""
+        try:
+            broker_orders = await self._broker_open_orders()
+        except Exception as exc:  # noqa: BLE001
+            broker_order_error = str(exc)
+            broker_orders = []
+        broker_open_orders = [
+            {
+                "order_id": order.order_id,
+                "symbol": order.symbol,
+                "status": _status_value(order.status),
+                "quantity": float(order.quantity),
+            }
+            for order in broker_orders
+            if bool(getattr(order, "is_active", False))
+        ]
+        return {
+            "flat": not nonzero_positions
+            and not internal_positions
+            and not internal_open_orders
+            and not broker_open_orders
+            and not broker_order_error,
+            "broker_positions": nonzero_positions,
+            "internal_positions": internal_positions,
+            "internal_open_orders": internal_open_orders,
+            "broker_open_orders": broker_open_orders,
+            "broker_open_order_error": broker_order_error,
+        }
 
     # ── Operator-driven RL switches ───────────────────────────────────
 
@@ -481,11 +725,23 @@ class LiveTradingPipeline(PaperTradingPipeline):
 
 # ── CLI ───────────────────────────────────────────────────────────────────
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="live_trading")
     p.add_argument("--asset-class", choices=["equities", "crypto", "futures"],
                    default="equities")
     p.add_argument("--config", type=str, default=None)
+    p.add_argument("--paper-rehearsal", action="store_true",
+                   help="Run live bootstrap with paper brokers and record would-be orders")
+    p.add_argument("--rehearsal-record-path", type=str, default=None,
+                   help="JSONL path for --paper-rehearsal order records")
+    p.add_argument("--halt", action="store_true",
+                   help="Write the live HALT sentinel and exit")
+    p.add_argument("--halt-reason", type=str, default="operator_halt",
+                   help="Reason recorded by --halt")
+    p.add_argument("--flatten", action="store_true",
+                   help="Cancel open orders, flatten broker/internal positions, and halt")
+    p.add_argument("--verify-flat", action="store_true",
+                   help="Check broker/internal positions and active orders are flat")
     p.add_argument("--emergency-flatten", action="store_true",
                    help="Flatten all positions and exit")
     p.add_argument("--enable-rl-shadow", action="store_true",
@@ -497,26 +753,68 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--revert-to-hrp", type=str, default=None,
                    metavar="REASON",
                    help="Revert the live optimizer to HRP with the given reason")
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover - glue only
-    args = _parse_args() if argv is None else _parse_args()
+    args = _parse_args(argv)
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    if HALT_FILE.exists():
-        print(f"REFUSED: HALT file {HALT_FILE} exists; remove it after preflight.",
+    halt_path = _configured_halt_path(args.config)
+    if args.halt:
+        write_halt_file(halt_path, reason=args.halt_reason, emergency=False)
+        print(json.dumps({"halted": True, "halt_file": str(halt_path)}, indent=2))
+        return 0
+
+    flatten_requested = bool(args.flatten or args.emergency_flatten)
+    if halt_path.exists() and not (flatten_requested or args.verify_flat):
+        print(f"REFUSED: HALT file {halt_path} exists; remove it after preflight.",
               file=sys.stderr)
         return 1
-    log.info(
-        "Live trading CLI — asset_class=%s emergency_flatten=%s",
-        args.asset_class, args.emergency_flatten,
+    from src.bootstrap import build_live_trading_pipeline
+    ctx = build_live_trading_pipeline(
+        args.config,
+        paper_rehearsal=args.paper_rehearsal,
+        rehearsal_record_path=args.rehearsal_record_path,
     )
-    log.warning(
-        "Live trading requires a project-level bootstrap that wires the real "
-        "BrokerFactory, PreflightChecker, and CapitalDeploymentController.",
-    )
-    return 0
+    log.info("Live trading starting — asset_class=%s symbols=%s",
+             args.asset_class, ctx.symbols)
+
+    async def _run() -> int:
+        if flatten_requested:
+            ctx.pipeline.request_emergency_flatten()
+            await ctx.pipeline.shutdown(emergency=True)
+            print(json.dumps({"flatten_submitted": True}, indent=2))
+            return 0
+        if args.verify_flat:
+            result = await ctx.pipeline.verify_flat()
+            print(json.dumps(result, indent=2, default=str))
+            return 0 if result.get("flat") else 2
+        if args.check_rl_promotion and ctx.pipeline.shadow_comparison is not None:
+            print(ctx.pipeline.shadow_comparison.check_promotion_eligibility())
+            return 0
+        if args.approve_rl_promotion:
+            print(await ctx.pipeline.approve_rl_promotion())
+            return 0
+        if args.revert_to_hrp:
+            print(await ctx.pipeline.revert_to_hrp(args.revert_to_hrp))
+            return 0
+        await ctx.pipeline.startup_sequence()
+        await ctx.pipeline.run(ctx.symbols)
+        return 0
+
+    return asyncio.run(_run())
+
+
+def _configured_halt_path(config_path: str | None) -> Path:
+    if config_path:
+        try:
+            from src.bootstrap import load_runtime_config
+            runtime = load_runtime_config(config_path, default_name="live_trading")
+            return Path(runtime.get("halt_file", HALT_FILE))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not load halt_file from config: %s", exc)
+    return HALT_FILE
 
 
 if __name__ == "__main__":  # pragma: no cover

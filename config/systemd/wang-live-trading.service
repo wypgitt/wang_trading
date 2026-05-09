@@ -15,7 +15,8 @@ EnvironmentFile=/opt/wang_trading/config/live_trading.env
 Environment="PYTHONPATH=/opt/wang_trading"
 Environment="KMP_DUPLICATE_LIB_OK=TRUE"
 
-ExecStartPre=/opt/wang_trading/venv/bin/python -m src.execution.preflight --full-check
+ExecStartPre=/opt/wang_trading/venv/bin/python -m src.execution.preflight \
+    --full-check --config /opt/wang_trading/config/live_trading.yaml
 ExecStart=/opt/wang_trading/venv/bin/python -m src.execution.live_trading \
     --config /opt/wang_trading/config/live_trading.yaml
 

@@ -49,7 +49,9 @@ After the script finishes:
 
 1. Edit `/opt/wang_trading/config/live_trading.yaml` — fill in broker
    credentials, symbols, deployment plan.
-2. Edit `/opt/wang_trading/config/live_trading.env` — export the
+2. Review `/opt/wang_trading/config/retrain.yaml` and
+   `/opt/wang_trading/config/monitoring.yaml`.
+3. Edit `/opt/wang_trading/config/live_trading.env` — export the
    asset-class-specific enable flags:
    ```ini
    WANG_ALLOW_LIVE_TRADING=yes        # Alpaca equities
@@ -57,7 +59,7 @@ After the script finishes:
    WANG_ALLOW_LIVE_FUTURES=yes        # IBKR futures
    ```
    Leave these blank until you actually intend to go live.
-3. Touch `.operator_checkin` to confirm recent operator presence:
+4. Touch `.operator_checkin` to confirm recent operator presence:
    ```bash
    sudo -u wang touch /opt/wang_trading/.operator_checkin
    ```
@@ -76,7 +78,8 @@ preflight fails. These are by design.
 2. **Run preflight**:
    ```bash
    sudo -u wang /opt/wang_trading/venv/bin/python \
-       -m src.execution.preflight --full-check
+       -m src.execution.preflight --full-check \
+       --config /opt/wang_trading/config/live_trading.yaml
    ```
    Exit codes: `0` clean, `2` warnings only (still OK), `1` blocker failed.
 
@@ -94,16 +97,35 @@ preflight fails. These are by design.
 
 ## Day-to-day operations
 
-- **Graceful stop**:
+- **Halt new trading**:
+  ```bash
+  sudo -u wang /opt/wang_trading/venv/bin/python \
+      -m src.execution.live_trading \
+      --config /opt/wang_trading/config/live_trading.yaml \
+      --halt --halt-reason operator_halt
+  ```
+  This writes the HALT file. Running services will skip new cycles and future
+  starts will be refused until an operator removes it after preflight.
+
+- **Stop the service process**:
   ```bash
   sudo systemctl stop wang-live-trading
   ```
-  The pipeline writes a HALT file and sends a shutdown alert before exiting.
 
 - **Emergency flatten** (cancel orders + close positions immediately):
   ```bash
   sudo -u wang /opt/wang_trading/venv/bin/python \
-      -m src.execution.live_trading --emergency-flatten
+      -m src.execution.live_trading \
+      --config /opt/wang_trading/config/live_trading.yaml \
+      --flatten
+  ```
+
+- **Verify flat**:
+  ```bash
+  sudo -u wang /opt/wang_trading/venv/bin/python \
+      -m src.execution.live_trading \
+      --config /opt/wang_trading/config/live_trading.yaml \
+      --verify-flat
   ```
 
 - **Check RL promotion eligibility**:
@@ -137,7 +159,9 @@ whether you want a flat book first.
 2. If needed, flatten:
    ```bash
    sudo -u wang /opt/wang_trading/venv/bin/python \
-       -m src.execution.live_trading --emergency-flatten
+       -m src.execution.live_trading \
+       --config /opt/wang_trading/config/live_trading.yaml \
+       --emergency-flatten
    ```
 
 3. Redeploy the previous revision:

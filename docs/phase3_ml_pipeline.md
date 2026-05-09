@@ -563,8 +563,9 @@ Retrain out of band when any of these fire:
   weekly importance report.
 
 ### Promotion gate
-Implemented in `_promotion_gate_phase4_stub` — swap the body when Phase 4
-lands. Phase 3 rule:
+The legacy `scripts/retrain_model.py` path is research-only and uses
+`_research_promotion_gate`. Production promotion goes through
+`scripts/retrain_now.py` and the bootstrap-wired gate stack. Research rule:
 
 ```
 if incumbent is None:

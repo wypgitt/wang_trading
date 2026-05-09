@@ -34,21 +34,24 @@ def _parse_args() -> argparse.Namespace:
                    help="ISO 8601, e.g. 2026-04-17T14:30:00Z")
     p.add_argument("--window-seconds", type=int, default=1,
                    help="Search window around the target timestamp")
+    p.add_argument("--config", type=str, default=None,
+                   help="Optional runtime YAML config path")
     return p.parse_args()
 
 
 async def _run(args: argparse.Namespace) -> dict:
-    # Project-level bootstrap responsibility — this CLI only orchestrates.
+    # src.bootstrap provides db/model_registry/feature_store.
     try:
         from src.bootstrap import build_replay_context  # type: ignore
-    except ImportError:
+    except ImportError as exc:
         print(
-            "ERROR: src.bootstrap.build_replay_context() not found.",
+            "ERROR: src.bootstrap.build_replay_context() unavailable: "
+            f"{exc}",
             file=sys.stderr,
         )
         return {"match": False, "error": "bootstrap_missing"}
 
-    ctx = build_replay_context()  # {db, model_registry, feature_store}
+    ctx = build_replay_context(args.config)  # {db, model_registry, feature_store}
 
     target = datetime.fromisoformat(args.timestamp.replace("Z", "+00:00"))
     rows = await ctx["db"].get_meta_labels(

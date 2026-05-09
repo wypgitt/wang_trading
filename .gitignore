@@ -19,6 +19,13 @@ env/
 .env
 .env.*
 config/settings.yaml
+config/paper_trading.yaml
+config/live_trading.yaml
+config/retrain.yaml
+config/monitoring.yaml
+config/futures_contracts.yaml
+config/live_trading.env
+config/secrets.enc
 
 # Logs
 logs/

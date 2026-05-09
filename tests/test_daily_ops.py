@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -13,7 +14,13 @@ from prometheus_client import CollectorRegistry
 from src.backtesting.transaction_costs import TransactionCostModel
 from src.execution.broker_adapter import PaperBrokerAdapter
 from src.execution.circuit_breakers import CircuitBreakerManager
-from src.execution.daily_ops import DailyReconciliation, generate_daily_report
+from src.execution.daily_ops import (
+    DailyReconciliation,
+    _execution_storage_url,
+    compute_paper_live_divergence,
+    generate_daily_report,
+    generate_paper_live_divergence_report,
+)
 from src.execution.models import (
     ExecutionAlgo,
     Fill,
@@ -81,8 +88,7 @@ def _build_om(portfolio: PortfolioState) -> tuple[OrderManager, PaperBrokerAdapt
 
 
 class TestReconciliation:
-    @pytest.mark.asyncio
-    async def test_detects_synthetic_discrepancy(self, tmp_path: Path):
+    def test_detects_synthetic_discrepancy(self, tmp_path: Path):
         pf = PortfolioState(cash=50_000.0, positions={
             "AAPL": _make_position("AAPL", qty=100, entry=100.0, current=100.0),
         })
@@ -96,7 +102,7 @@ class TestReconciliation:
         storage = ExecutionStorage(f"sqlite:///{tmp_path / 'x.db'}")
         storage.setup_execution_schema()
 
-        result = await DailyReconciliation().run(om, storage, alerts)
+        result = asyncio.run(DailyReconciliation().run(om, storage, alerts))
         assert any(d["symbol"] == "TSLA" for d in result["discrepancies"])
 
 
@@ -173,9 +179,39 @@ class TestDailyReport:
         assert "Count (filled): 0" in report
 
 
+class TestPaperLiveDivergenceReport:
+    def test_divergence_flags_large_sharpe_gap(self):
+        result = compute_paper_live_divergence(
+            [0.01, 0.012, 0.011, 0.013],
+            [-0.01, -0.012, -0.011, -0.013],
+            threshold=1.0,
+        )
+        assert result["diverged"]
+        assert "HALT" in result["operator_action"]
+
+    def test_morning_report_is_easy_to_scan(self):
+        report = generate_paper_live_divergence_report(
+            [0.01, 0.011, 0.012],
+            [0.009, 0.010, 0.011],
+            threshold=100.0,
+        )
+        assert "Morning Paper/Live Divergence" in report
+        assert "Status: OK" in report
+        assert "Operator action:" in report
+
+
+class TestDailyOpsCLIHelpers:
+    def test_execution_storage_url_prefers_runtime_config(self):
+        ctx = type("Ctx", (), {})()
+        ctx.runtime_config = {"storage": {"database_url": "sqlite:///runtime.db"}}
+        ctx.settings = type("Settings", (), {})()
+        ctx.settings.database = type("Database", (), {"url": "sqlite:///settings.db"})()
+
+        assert _execution_storage_url(ctx) == "sqlite:///runtime.db"
+
+
 class TestReconciliationPnL:
-    @pytest.mark.asyncio
-    async def test_daily_pnl_reflects_portfolio_state(self, tmp_path: Path):
+    def test_daily_pnl_reflects_portfolio_state(self, tmp_path: Path):
         pf = PortfolioState(cash=100_000.0, positions={
             "AAPL": _make_position("AAPL", qty=100, entry=100.0, current=110.0),
         })
@@ -184,6 +220,6 @@ class TestReconciliationPnL:
         alerts = AlertManager(channel_map={s: [LogChannel()] for s in AlertSeverity})
         storage = ExecutionStorage(f"sqlite:///{tmp_path / 'y.db'}")
         storage.setup_execution_schema()
-        result = await DailyReconciliation().run(om, storage, alerts)
+        result = asyncio.run(DailyReconciliation().run(om, storage, alerts))
         assert result["daily_pnl"] == pytest.approx(1000.0)
         assert result["daily_return"] == pytest.approx(1000.0 / pf.nav)

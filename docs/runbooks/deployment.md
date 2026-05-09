@@ -48,7 +48,7 @@ Rollback does not automatically flatten — decide first whether you want a
 flat book.
 
 1. `sudo systemctl stop wang-live-trading`.
-2. (Optional) `--emergency-flatten`.
+2. (Optional) Run `python -m src.execution.live_trading --config config/live_trading.yaml --emergency-flatten`.
 3. Redeploy the prior commit:
    ```bash
    git checkout <previous-sha>

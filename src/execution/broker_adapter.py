@@ -77,6 +77,24 @@ class BaseBrokerAdapter(ABC):
         q = await self.get_quote(symbol)
         return q["mid"]
 
+    async def get_open_orders(self, symbols: list[str] | None = None) -> list[Order]:
+        """Return active broker orders visible outside the internal ledger.
+
+        Concrete adapters should override this when the broker exposes an
+        open-order endpoint. The fallback keeps paper/in-memory adapters
+        compatible while still giving reconciliation a single broker hook.
+        """
+        symbol_filter = set(symbols or [])
+        orders = getattr(self, "orders", None)
+        if not isinstance(orders, dict):
+            return []
+        return [
+            order
+            for order in orders.values()
+            if bool(getattr(order, "is_active", False))
+            and (not symbol_filter or str(getattr(order, "symbol", "")) in symbol_filter)
+        ]
+
     _poll_cursor: dict[str, int]
 
     async def poll_fills(self, order_id: str) -> list[Fill]:
@@ -452,6 +470,31 @@ class AlpacaBrokerAdapter(BaseBrokerAdapter):
             self._bracket_children[order.order_id] = [str(getattr(leg, "id", "")) for leg in legs]
         return order
 
+    def _order_from_alpaca_response(self, resp: Any, default_order_id: str = "") -> Order:
+        qty = float(getattr(resp, "qty", 0) or 0)
+        side_str = str(
+            getattr(getattr(resp, "side", ""), "value", getattr(resp, "side", ""))
+        ).lower()
+        side = 1 if side_str.startswith("b") else -1
+        type_str = str(
+            getattr(getattr(resp, "type", ""), "value", getattr(resp, "type", ""))
+        ).lower()
+        order_type = {
+            "market": OrderType.MARKET,
+            "limit": OrderType.LIMIT,
+            "stop_limit": OrderType.LIMIT,
+        }.get(type_str, OrderType.MARKET)
+        order = Order(
+            order_id=str(getattr(resp, "id", default_order_id)),
+            timestamp=datetime.now(timezone.utc),
+            symbol=str(getattr(resp, "symbol", "")),
+            side=side,
+            order_type=order_type,
+            quantity=qty * side,
+            limit_price=getattr(resp, "limit_price", None),
+        )
+        return self._apply_alpaca_response(order, resp)
+
     # ── Broker interface ──────────────────────────────────────────────
 
     async def submit_order(self, order: Order) -> Order:
@@ -474,18 +517,23 @@ class AlpacaBrokerAdapter(BaseBrokerAdapter):
             resp = await asyncio.to_thread(self.client.get_order_by_id, order_id)
         except Exception as exc:
             raise BrokerNetworkError(f"Alpaca get_order_by_id failed: {exc}") from exc
-        qty = float(getattr(resp, "qty", 0) or 0)
-        side_str = str(getattr(getattr(resp, "side", ""), "value", getattr(resp, "side", ""))).lower()
-        side = 1 if side_str.startswith("b") else -1
-        order = Order(
-            order_id=str(getattr(resp, "id", order_id)),
-            timestamp=datetime.now(timezone.utc),
-            symbol=str(getattr(resp, "symbol", "")),
-            side=side,
-            order_type=OrderType.MARKET,
-            quantity=qty * side,
-        )
-        return self._apply_alpaca_response(order, resp)
+        return self._order_from_alpaca_response(resp, order_id)
+
+    async def get_open_orders(self, symbols: list[str] | None = None) -> list[Order]:
+        try:
+            resp = await asyncio.to_thread(self.client.get_orders)
+        except Exception as exc:
+            raise BrokerNetworkError(f"Alpaca get_orders failed: {exc}") from exc
+        symbol_filter = set(symbols or [])
+        out: list[Order] = []
+        for item in resp or []:
+            order = self._order_from_alpaca_response(item)
+            if not bool(getattr(order, "is_active", False)):
+                continue
+            if symbol_filter and order.symbol not in symbol_filter:
+                continue
+            out.append(order)
+        return out
 
     async def get_positions(self) -> dict[str, Position]:
         try:
@@ -823,6 +871,27 @@ class CCXTBrokerAdapter(BaseBrokerAdapter):
             order.add_fill(fill)
         return order
 
+    def _order_from_ccxt_response(
+        self,
+        resp: dict[str, Any],
+        *,
+        symbol: str | None = None,
+        default_order_id: str = "",
+    ) -> Order:
+        side_str = str(resp.get("side") or "buy").lower()
+        side = 1 if side_str.startswith("b") else -1
+        qty = float(resp.get("amount") or 0.0)
+        order = Order(
+            order_id=str(resp.get("id") or default_order_id),
+            timestamp=datetime.now(timezone.utc),
+            symbol=str(resp.get("symbol") or (symbol or "")),
+            side=side,
+            order_type=OrderType.LIMIT,
+            quantity=qty * side,
+            limit_price=resp.get("price"),
+        )
+        return self._apply_ccxt_response(order, resp)
+
     async def cancel_order(self, order_id: str, symbol: str | None = None) -> bool:
         try:
             await self.client.cancel_order(order_id, symbol)
@@ -835,19 +904,37 @@ class CCXTBrokerAdapter(BaseBrokerAdapter):
             resp = await self.client.fetch_order(order_id, symbol)
         except Exception as exc:
             raise BrokerNetworkError(f"CCXT fetch_order failed: {exc}") from exc
-        side_str = str(resp.get("side") or "buy").lower()
-        side = 1 if side_str.startswith("b") else -1
-        qty = float(resp.get("amount") or 0.0)
-        order = Order(
-            order_id=str(resp.get("id") or order_id),
-            timestamp=datetime.now(timezone.utc),
-            symbol=str(resp.get("symbol") or (symbol or "")),
-            side=side,
-            order_type=OrderType.LIMIT,
-            quantity=qty * side,
-            limit_price=resp.get("price"),
+        return self._order_from_ccxt_response(
+            resp,
+            symbol=symbol,
+            default_order_id=order_id,
         )
-        return self._apply_ccxt_response(order, resp)
+
+    async def get_open_orders(self, symbols: list[str] | None = None) -> list[Order]:
+        await self._ensure_markets()
+        if not getattr(self.client, "has", {}).get("fetchOpenOrders", True):
+            return []
+        raw_orders: list[dict[str, Any]] = []
+        try:
+            if symbols:
+                for symbol in symbols:
+                    raw_orders.extend(
+                        await self.client.fetch_open_orders(self.normalize_symbol(symbol))
+                    )
+            else:
+                raw_orders = list(await self.client.fetch_open_orders())
+        except Exception as exc:
+            raise BrokerNetworkError(f"CCXT fetch_open_orders failed: {exc}") from exc
+        symbol_filter = {self.normalize_symbol(s) for s in symbols or []}
+        out: list[Order] = []
+        for item in raw_orders or []:
+            order = self._order_from_ccxt_response(item)
+            if not bool(getattr(order, "is_active", False)):
+                continue
+            if symbol_filter and self.normalize_symbol(order.symbol) not in symbol_filter:
+                continue
+            out.append(order)
+        return out
 
     async def get_positions(self) -> dict[str, Position]:
         """Return spot balances as Positions. For perpetuals, merge in the

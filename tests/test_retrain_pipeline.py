@@ -68,6 +68,12 @@ class TestRunSuccess:
         assert run.new_version == "new-run-123"
         assert run.cv_score == 0.65
         assert run.gate_results.get("passed") is True
+        logged = pipe.registry.log_training_run.call_args.kwargs
+        assert logged["X"].shape == (10, 2)
+        assert logged["y"].shape[0] == 10
+        assert logged["metrics"]["gate_cpcv"] == 1.0
+        assert logged["metrics"]["gate_dsr"] == 1.0
+        assert logged["metrics"]["gate_pbo"] == 1.0
         pipe.registry.promote_model.assert_called_once_with("new-run-123")
 
     def test_fills_metadata(self):
