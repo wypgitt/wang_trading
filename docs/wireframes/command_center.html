@@ -1,0 +1,600 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Wang Trading — Command Center (v2 wireframe)</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f8;
+      --surface: #ffffff;
+      --surface-muted: #f8fafc;
+      --ink: #111827;
+      --muted: #667085;
+      --line: #d7dde6;
+      --buy: #0f7a54;
+      --buy-bg: #e7f6ef;
+      --sell: #b42318;
+      --sell-bg: #fdeceb;
+      --watch: #8a6100;
+      --watch-bg: #fff4d6;
+      --model: #285dad;
+      --model-bg: #eaf2ff;
+      --ok: #16794c;
+      --warning: #b76e00;
+      --critical: #b42318;
+      --info: #2563a9;
+      --regime-up: #0f7a54;
+      --regime-down: #b42318;
+      --regime-mr: #7c3aed;
+      --regime-hv: #b76e00;
+      --shadow: #7c3aed;
+      --diff-new: #0f7a54;
+      --diff-changed: #2563a9;
+      --diff-cleared: #667085;
+      font-family: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-feature-settings: "tnum" 1, "lnum" 1;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font-size: 13px; }
+
+    /* Global status bar */
+    .status-bar {
+      position: sticky; top: 0; z-index: 30;
+      display: grid;
+      grid-template-columns: 96px 96px 80px 84px 84px 100px 120px 156px 100px 100px 100px 100px 110px 1fr;
+      gap: 1px;
+      background: #0b1220;
+      color: #e6ecf5;
+      border-bottom: 1px solid #1a2335;
+    }
+    .status-cell {
+      padding: 8px 10px 7px;
+      background: #0b1220;
+      display: flex; flex-direction: column; gap: 2px;
+      cursor: pointer;
+      min-height: 50px;
+    }
+    .status-cell .l { font-size: 10px; letter-spacing: 0.04em; color: #8aa0bf; text-transform: uppercase; font-weight: 600; }
+    .status-cell .v { font-size: 14px; font-weight: 700; line-height: 1.1; }
+    .status-cell .v.pos { color: #6fe2ad; }
+    .status-cell .v.neg { color: #f7a4a0; }
+    .status-cell .badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 1px 6px; border-radius: 999px;
+      font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
+    }
+    .status-cell .badge.ok { background: rgba(22,121,76,0.18); color: #6fe2ad; }
+    .status-cell .badge.warn { background: rgba(183,110,0,0.22); color: #ffd687; }
+    .status-cell .badge.crit { background: rgba(180,35,24,0.22); color: #ff8b85; }
+    .status-cell .badge.regime-up { background: rgba(15,122,84,0.22); color: #6fe2ad; }
+    .status-cell .sub { font-size: 11px; color: #b6c4d8; }
+
+    /* Diff rail */
+    .diff-rail {
+      position: sticky; top: 50px; z-index: 29;
+      background: #1a2335; color: #cfd9e8;
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 12px;
+      border-bottom: 1px solid #2a3550;
+      overflow-x: auto; white-space: nowrap;
+    }
+    .diff-label { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; color: #8aa0bf; text-transform: uppercase; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 3px 9px; border-radius: 999px;
+      font-size: 11px; font-weight: 600;
+      background: #25324f; color: #d9e3f4;
+      border: 1px solid #344164;
+      cursor: pointer;
+    }
+    .chip .tag { font-size: 9px; font-weight: 800; letter-spacing: 0.08em; }
+    .chip.new   .tag { color: #6fe2ad; }
+    .chip.flip  .tag { color: #ffd687; }
+    .chip.delta .tag { color: #8db1ff; }
+    .chip.err   .tag { color: #ff8b85; }
+    .chip.cleared .tag { color: #aebdd1; }
+
+    /* Page */
+    main {
+      max-width: 1480px;
+      margin: 0 auto;
+      padding: 14px 20px 40px;
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      gap: 14px;
+    }
+    .col-main, .col-side { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      box-shadow: 0 1px 2px rgba(16,24,40,0.05);
+    }
+    .card-h {
+      padding: 10px 14px; border-bottom: 1px solid var(--line);
+      display: flex; align-items: center; justify-content: space-between;
+      background: var(--surface-muted);
+    }
+    .card-h h3 { margin: 0; font-size: 13px; font-weight: 700; letter-spacing: 0.02em; }
+    .card-h .meta { font-size: 11px; color: var(--muted); }
+    .card-b { padding: 12px 14px; }
+
+    /* Action counts */
+    .action-counts {
+      display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px;
+    }
+    .ac-tile {
+      border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px;
+      background: var(--surface);
+      display: flex; flex-direction: column; gap: 4px; cursor: pointer;
+    }
+    .ac-tile .lbl { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; }
+    .ac-tile .cnt { font-size: 22px; font-weight: 760; line-height: 1; }
+    .ac-tile.buy   { border-left: 3px solid var(--buy); }
+    .ac-tile.buy   .lbl { color: var(--buy); }
+    .ac-tile.sell  { border-left: 3px solid var(--sell); }
+    .ac-tile.sell  .lbl { color: var(--sell); }
+    .ac-tile.watch { border-left: 3px solid var(--watch); }
+    .ac-tile.watch .lbl { color: var(--watch); }
+    .ac-tile.model { border-left: 3px solid var(--model); }
+    .ac-tile.model .lbl { color: var(--model); }
+    .ac-tile.nodata{ border-left: 3px solid var(--muted); }
+    .ac-tile.nodata.lbl{ color: var(--muted); }
+    .ac-tile.error { border-left: 3px solid var(--critical); }
+    .ac-tile.error .lbl{ color: var(--critical); }
+
+    /* Ideas table */
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { padding: 7px 10px; text-align: right; vertical-align: middle; white-space: nowrap; }
+    th { background: var(--surface-muted); color: #526071; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; border-bottom: 1px solid var(--line); }
+    td { border-bottom: 1px solid #edf0f5; }
+    th:first-child, td:first-child,
+    th:nth-child(2), td:nth-child(2),
+    th:nth-child(10), td:nth-child(10) { text-align: left; }
+    tr:hover td { background: #fafbfd; cursor: pointer; }
+    .sym { font-weight: 760; font-size: 13px; }
+    .pill {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 64px; padding: 2px 8px; border-radius: 999px;
+      font-size: 11px; font-weight: 800;
+    }
+    .pill.buy   { color: var(--buy);   background: var(--buy-bg); }
+    .pill.sell  { color: var(--sell);  background: var(--sell-bg); }
+    .pill.watch { color: var(--watch); background: var(--watch-bg); }
+    .pill.model { color: var(--model); background: var(--model-bg); }
+    .pill.err   { color: var(--critical); background: #fdeceb; }
+    .fit { display: inline-block; width: 60px; height: 6px; background: #ecf0f6; border-radius: 999px; position: relative; vertical-align: middle; }
+    .fit > i { display: block; height: 100%; border-radius: 999px; background: var(--info); }
+    .pos { color: var(--buy); }
+    .neg { color: var(--sell); }
+
+    /* Edge vs Size scatter */
+    .scatter-wrap { position: relative; padding: 14px; }
+    .scatter-axes { font-size: 10px; fill: var(--muted); }
+    .scatter-quadrant-label { font-size: 10px; fill: var(--muted); font-weight: 700; letter-spacing: 0.06em; }
+    .scatter-point-buy   { fill: var(--buy);   fill-opacity: 0.85; stroke: #fff; stroke-width: 1; }
+    .scatter-point-sell  { fill: var(--sell);  fill-opacity: 0.85; stroke: #fff; stroke-width: 1; }
+    .scatter-point-watch { fill: var(--watch); fill-opacity: 0.85; stroke: #fff; stroke-width: 1; }
+    .scatter-ref { stroke: #c5ccd6; stroke-dasharray: 3 4; }
+    .scatter-label { font-size: 10px; fill: #38465a; }
+
+    /* Side column tiles */
+    .stack-meta { display: grid; gap: 6px; }
+    .stack-meta .row { display: flex; justify-content: space-between; align-items: center; }
+    .stack-meta .row .l { color: var(--muted); }
+    .stack-meta .row .v { font-weight: 700; }
+    .regime-bars { display: grid; grid-template-columns: 80px 1fr 36px; gap: 6px; align-items: center; font-size: 11px; }
+    .regime-bars .bar { height: 6px; background: #ecf0f6; border-radius: 999px; overflow: hidden; }
+    .regime-bars .bar > i { display: block; height: 100%; border-radius: 999px; }
+    .regime-bars .bar.up   > i { background: var(--regime-up); }
+    .regime-bars .bar.down > i { background: var(--regime-down); }
+    .regime-bars .bar.mr   > i { background: var(--regime-mr); }
+    .regime-bars .bar.hv   > i { background: var(--regime-hv); }
+
+    /* Stage latency */
+    .stage-row { display: grid; grid-template-columns: 140px 1fr 56px; gap: 8px; align-items: center; padding: 4px 0; font-size: 12px; }
+    .stage-bar { height: 8px; background: #ecf0f6; border-radius: 999px; overflow: hidden; }
+    .stage-bar > i { display: block; height: 100%; border-radius: 999px; }
+    .stage-bar.ok > i { background: var(--ok); }
+    .stage-bar.warn > i { background: var(--warning); }
+    .stage-bar.crit > i { background: var(--critical); }
+
+    /* Audit events */
+    .events { display: flex; flex-direction: column; gap: 4px; }
+    .ev { display: grid; grid-template-columns: 90px 130px 1fr; gap: 8px; padding: 5px 0; font-size: 11px; border-bottom: 1px dashed #eef1f6; }
+    .ev:last-child { border-bottom: 0; }
+    .ev .t { color: var(--muted); }
+    .ev .k { font-weight: 700; }
+    .ev .k.sg   { color: var(--info); }
+    .ev .k.mlp  { color: var(--model); }
+    .ev .k.bs   { color: var(--buy); }
+    .ev .k.os   { color: var(--ok); }
+    .ev .k.br   { color: var(--critical); }
+    .ev .k.rl   { color: var(--shadow); }
+    .ev .m { color: #38465a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* Toolbar */
+    .toolbar { display: flex; align-items: center; justify-content: space-between; padding: 6px 4px 0 4px; }
+    .toolbar h2 { margin: 0; font-size: 17px; font-weight: 720; letter-spacing: 0; }
+    .toolbar-actions { display: flex; gap: 6px; }
+    .btn { height: 30px; padding: 0 12px; border-radius: 5px; border: 1px solid var(--line); background: #fff; font: inherit; font-weight: 620; cursor: pointer; color: var(--ink); }
+    .btn.primary { background: #186b58; color: #fff; border-color: transparent; }
+    .btn.danger  { background: #b42318; color: #fff; border-color: transparent; }
+    .btn.cmdk    { display: inline-flex; align-items: center; gap: 6px; }
+    .btn.cmdk kbd { font-family: inherit; font-size: 10px; padding: 1px 5px; border-radius: 3px; background: #eef1f6; border: 1px solid #d7dde6; color: #38465a; }
+
+    /* Footer breaker strip */
+    .breakers { display: flex; gap: 8px; flex-wrap: wrap; }
+    .breaker { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 5px; font-size: 11px; }
+    .breaker.ok   { background: #e7f6ef; color: var(--ok); }
+    .breaker.warn { background: var(--watch-bg); color: var(--watch); }
+    .breaker.crit { background: var(--sell-bg); color: var(--sell); }
+
+    @media (max-width: 1200px) {
+      main { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Global status bar (14 fields) -->
+  <div class="status-bar" role="banner">
+    <div class="status-cell"><span class="l">NAV</span><span class="v">$10.12M</span></div>
+    <div class="status-cell"><span class="l">Daily P&amp;L</span><span class="v pos">+$24.1k</span><span class="sub">+0.24%</span></div>
+    <div class="status-cell"><span class="l">Drawdown</span><span class="v">-1.41%</span></div>
+    <div class="status-cell"><span class="l">Gross</span><span class="v">24.6%</span></div>
+    <div class="status-cell"><span class="l">Net</span><span class="v">+6.2%</span></div>
+    <div class="status-cell"><span class="l">Model</span><span class="v">meta_v1.7.2</span><span class="sub">3d old</span></div>
+    <div class="status-cell"><span class="l">Data</span><span class="v"><span class="badge ok">OK 2s</span></span><span class="sub">worst: sentiment 84s</span></div>
+    <div class="status-cell"><span class="l">Regime</span><span class="v"><span class="badge regime-up">TREND&nbsp;UP&nbsp;0.72</span></span></div>
+    <div class="status-cell"><span class="l">Drift</span><span class="v"><span class="badge warn">3 feat.</span></span></div>
+    <div class="status-cell"><span class="l">Cal</span><span class="v"><span class="badge ok">3d</span></span></div>
+    <div class="status-cell"><span class="l">Broker</span><span class="v"><span class="badge ok">41ms</span></span></div>
+    <div class="status-cell"><span class="l">Breakers</span><span class="v"><span class="badge ok">0/8</span></span></div>
+    <div class="status-cell"><span class="l">Alerts</span><span class="v"><span class="badge warn">2 warn</span></span></div>
+    <div class="status-cell"><span class="l">Last refresh</span><span class="v">18:45:21Z</span><span class="sub">auto 30s</span></div>
+  </div>
+
+  <!-- Diff rail -->
+  <div class="diff-rail" role="region" aria-label="Diff since last refresh">
+    <span class="diff-label">Δ since 18:40:00Z</span>
+    <span class="chip new">     <span class="tag">NEW BUY</span> NVDA <span style="color:#8db1ff">+1.40%</span></span>
+    <span class="chip new">     <span class="tag">NEW BUY</span> COIN <span style="color:#8db1ff">+0.80%</span></span>
+    <span class="chip flip">    <span class="tag">FLIP</span> META BUY→SELL</span>
+    <span class="chip delta">   <span class="tag">+20bp</span> AAPL 1.00→1.20%</span>
+    <span class="chip delta">   <span class="tag">-15bp</span> MSFT 1.10→0.95%</span>
+    <span class="chip err">     <span class="tag">ERR+</span> TSLA feature staleness</span>
+    <span class="chip cleared"> <span class="tag">CLR</span> BABA error cleared</span>
+    <span class="chip flip">    <span class="tag">FLIP</span> SOL  SELL→WATCH</span>
+  </div>
+
+  <main>
+    <!-- LEFT COLUMN -->
+    <div class="col-main">
+
+      <div class="toolbar">
+        <h2>Command Center</h2>
+        <div class="toolbar-actions">
+          <button class="btn cmdk">⌘ K <kbd>palette</kbd></button>
+          <button class="btn">Open Trade Ideas</button>
+          <button class="btn">Export Summary</button>
+          <button class="btn primary">Refresh</button>
+        </div>
+      </div>
+
+      <!-- Action counts -->
+      <div class="card">
+        <div class="card-b">
+          <div class="action-counts">
+            <div class="ac-tile buy"><span class="lbl">BUY</span><span class="cnt">9</span></div>
+            <div class="ac-tile sell"><span class="lbl">SELL</span><span class="cnt">4</span></div>
+            <div class="ac-tile watch"><span class="lbl">WATCH</span><span class="cnt">7</span></div>
+            <div class="ac-tile model"><span class="lbl">MODEL REQ</span><span class="cnt">2</span></div>
+            <div class="ac-tile nodata"><span class="lbl">NO DATA</span><span class="cnt">1</span></div>
+            <div class="ac-tile error"><span class="lbl">ERROR</span><span class="cnt">0</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Top actionable ideas -->
+      <div class="card">
+        <div class="card-h">
+          <h3>Top Actionable Ideas</h3>
+          <span class="meta">23 ideas · gross 18.4% · net +6.2% · sorted by priority</span>
+        </div>
+        <div class="card-b" style="padding:0">
+          <table>
+            <thead>
+              <tr>
+                <th>Symbol</th><th>Action</th>
+                <th>Target</th><th>Notional</th><th>Meta</th><th>Cal</th>
+                <th>Fit</th><th>Cost bps</th><th>Win 90d</th>
+                <th>Top SHAP feature</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="sym">NVDA</td><td><span class="pill buy">BUY</span></td>
+                <td>+1.40%</td><td>$141,683</td><td>0.71</td><td>0.66</td>
+                <td><span class="fit"><i style="width:88%"></i></span></td><td>5.4</td><td>62%</td>
+                <td>vol_term_structure +0.092</td>
+              </tr>
+              <tr>
+                <td class="sym">AAPL</td><td><span class="pill buy">BUY</span></td>
+                <td>+1.20%</td><td>$121,443</td><td>0.66</td><td>0.61</td>
+                <td><span class="fit"><i style="width:81%"></i></span></td><td>6.0</td><td>58%</td>
+                <td>vol_term_structure +0.084</td>
+              </tr>
+              <tr>
+                <td class="sym">COIN</td><td><span class="pill buy">BUY</span></td>
+                <td>+0.80%</td><td>$80,962</td><td>0.62</td><td>0.58</td>
+                <td><span class="fit"><i style="width:74%"></i></span></td><td>11.2</td><td>54%</td>
+                <td>onchain_netflow +0.061</td>
+              </tr>
+              <tr>
+                <td class="sym">META</td><td><span class="pill sell">SELL</span></td>
+                <td>-1.10%</td><td>-$111,322</td><td>0.32</td><td>0.34</td>
+                <td><span class="fit"><i style="width:69%"></i></span></td><td>7.4</td><td>51%</td>
+                <td>mean_rev_z -0.057</td>
+              </tr>
+              <tr>
+                <td class="sym">TSLA</td><td><span class="pill err">ERROR</span></td>
+                <td>—</td><td>—</td><td>—</td><td>—</td>
+                <td>—</td><td>—</td><td>—</td>
+                <td>feature staleness ≥ 600s</td>
+              </tr>
+              <tr>
+                <td class="sym">BTC</td><td><span class="pill model">MODEL?</span></td>
+                <td>+0.40%</td><td>$40,400</td><td>—</td><td>—</td>
+                <td>—</td><td>9.1</td><td>—</td>
+                <td>(meta model required)</td>
+              </tr>
+              <tr>
+                <td class="sym">MSFT</td><td><span class="pill buy">BUY</span></td>
+                <td>+0.95%</td><td>$96,098</td><td>0.60</td><td>0.57</td>
+                <td><span class="fit"><i style="width:78%"></i></span></td><td>4.8</td><td>56%</td>
+                <td>ts_momentum_z_63 +0.052</td>
+              </tr>
+              <tr>
+                <td class="sym">SOL</td><td><span class="pill watch">WATCH</span></td>
+                <td>+0.15%</td><td>$15,164</td><td>0.53</td><td>0.52</td>
+                <td><span class="fit"><i style="width:46%"></i></span></td><td>14.8</td><td>49%</td>
+                <td>vrp_percentile +0.022</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Edge vs Size scatter -->
+      <div class="card">
+        <div class="card-h">
+          <h3>Edge vs Size</h3>
+          <span class="meta">calibrated probability (x) × target weight (y) — markers colored by action</span>
+        </div>
+        <div class="card-b scatter-wrap">
+          <svg viewBox="0 0 760 320" width="100%" height="320" role="img" aria-label="Edge vs size scatter">
+            <!-- Axes -->
+            <line x1="60" y1="20" x2="60"  y2="280" class="scatter-ref"/>
+            <line x1="60" y1="280" x2="730" y2="280" class="scatter-ref"/>
+            <!-- Reference lines: x=0.5 (decision threshold), y=0 -->
+            <line x1="395" y1="20" x2="395" y2="280" class="scatter-ref"/>
+            <line x1="60"  y1="150" x2="730" y2="150" class="scatter-ref"/>
+
+            <!-- Quadrant labels -->
+            <text class="scatter-quadrant-label" x="76"  y="40">LOW EDGE / LONG</text>
+            <text class="scatter-quadrant-label" x="566" y="40">HIGH EDGE / LONG</text>
+            <text class="scatter-quadrant-label" x="76"  y="270" style="fill:#b42318">LOW EDGE / SHORT (warn)</text>
+            <text class="scatter-quadrant-label" x="566" y="270">HIGH EDGE / SHORT</text>
+
+            <!-- Axis labels -->
+            <text class="scatter-axes" x="60"  y="305">calibrated prob 0.00</text>
+            <text class="scatter-axes" x="700" y="305">1.00</text>
+            <text class="scatter-axes" x="10"  y="22">+2%</text>
+            <text class="scatter-axes" x="10"  y="155">0%</text>
+            <text class="scatter-axes" x="10"  y="285">-2%</text>
+
+            <!-- Points: x = 60 + p*670 ; y = 150 - (w_pct*65)  (w_pct in [-2,+2]) -->
+            <!-- NVDA: p=0.66, w=+1.4 -->
+            <circle class="scatter-point-buy"  cx="502" cy="59"  r="6"/>
+            <text class="scatter-label" x="510" y="56">NVDA</text>
+            <!-- AAPL: p=0.61, w=+1.2 -->
+            <circle class="scatter-point-buy"  cx="468" cy="72"  r="6"/>
+            <text class="scatter-label" x="476" y="69">AAPL</text>
+            <!-- MSFT: p=0.57, w=+0.95 -->
+            <circle class="scatter-point-buy"  cx="442" cy="88"  r="6"/>
+            <text class="scatter-label" x="450" y="85">MSFT</text>
+            <!-- COIN: p=0.58, w=+0.8 -->
+            <circle class="scatter-point-buy"  cx="448" cy="98"  r="6"/>
+            <text class="scatter-label" x="456" y="95">COIN</text>
+            <!-- META: p=0.34, w=-1.1 -->
+            <circle class="scatter-point-sell" cx="288" cy="221" r="6"/>
+            <text class="scatter-label" x="296" y="218">META</text>
+            <!-- AMD: p=0.42, w=-0.7 -->
+            <circle class="scatter-point-sell" cx="341" cy="195" r="6"/>
+            <text class="scatter-label" x="349" y="192">AMD</text>
+            <!-- SOL: p=0.52, w=+0.15 -->
+            <circle class="scatter-point-watch" cx="408" cy="140" r="5"/>
+            <text class="scatter-label" x="416" y="137">SOL</text>
+            <!-- ETH: p=0.55, w=+0.3 -->
+            <circle class="scatter-point-buy" cx="428" cy="130" r="5"/>
+            <text class="scatter-label" x="436" y="127">ETH</text>
+            <!-- Outlier: high edge / small bet -->
+            <!-- AVGO: p=0.70, w=+0.20 -->
+            <circle class="scatter-point-buy" cx="529" cy="137" r="6" stroke="#7c3aed" stroke-width="1.5"/>
+            <text class="scatter-label" x="537" y="134" fill="#7c3aed">AVGO  (under-sized?)</text>
+            <!-- Dangerous outlier: oversized low edge -->
+            <!-- BAC: p=0.40, w=-1.6 -->
+            <circle class="scatter-point-sell" cx="328" cy="254" r="6" stroke="#b42318" stroke-width="1.5"/>
+            <text class="scatter-label" x="336" y="251" fill="#b42318">BAC  (oversized?)</text>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Stage latency -->
+      <div class="card">
+        <div class="card-h">
+          <h3>Stage Latency (95p)</h3>
+          <span class="meta">last cycle · thresholds from monitoring config</span>
+        </div>
+        <div class="card-b">
+          <div class="stage-row"><span>data_fetch</span><span class="stage-bar ok"><i style="width:18%"></i></span><span class="meta">0.08s</span></div>
+          <div class="stage-row"><span>feature_compute</span><span class="stage-bar ok"><i style="width:34%"></i></span><span class="meta">0.21s</span></div>
+          <div class="stage-row"><span>signal_generation</span><span class="stage-bar ok"><i style="width:22%"></i></span><span class="meta">0.11s</span></div>
+          <div class="stage-row"><span>meta_inference</span><span class="stage-bar ok"><i style="width:14%"></i></span><span class="meta">0.04s</span></div>
+          <div class="stage-row"><span>sizing</span><span class="stage-bar ok"><i style="width:8%"></i></span><span class="meta">0.02s</span></div>
+          <div class="stage-row"><span>target_generation</span><span class="stage-bar warn"><i style="width:62%"></i></span><span class="meta">0.31s</span></div>
+          <div class="stage-row"><span>order_routing</span><span class="stage-bar ok"><i style="width:16%"></i></span><span class="meta">0.05s</span></div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- RIGHT COLUMN -->
+    <div class="col-side">
+
+      <!-- Regime tile expanded -->
+      <div class="card">
+        <div class="card-h">
+          <h3>Regime</h3>
+          <span class="meta">LSTM detector · refit 4d ago</span>
+        </div>
+        <div class="card-b">
+          <div class="regime-bars">
+            <span>Trending up</span><span class="bar up"><i style="width:72%"></i></span><span style="text-align:right">0.72</span>
+            <span>Trending down</span><span class="bar down"><i style="width:8%"></i></span><span style="text-align:right">0.08</span>
+            <span>Mean reverting</span><span class="bar mr"><i style="width:14%"></i></span><span style="text-align:right">0.14</span>
+            <span>High volatility</span><span class="bar hv"><i style="width:6%"></i></span><span style="text-align:right">0.06</span>
+          </div>
+          <div style="margin-top:10px; font-size:11px; color:var(--muted)">
+            sequence (last 24 bars):
+          </div>
+          <svg viewBox="0 0 320 18" width="100%" height="18" style="margin-top:4px">
+            <!-- regime band: each cell 13px wide -->
+            <g>
+              <rect x="0"   y="0" width="13" height="14" fill="#7c3aed"/>
+              <rect x="13"  y="0" width="13" height="14" fill="#7c3aed"/>
+              <rect x="26"  y="0" width="13" height="14" fill="#7c3aed"/>
+              <rect x="39"  y="0" width="13" height="14" fill="#0f7a54"/>
+              <rect x="52"  y="0" width="13" height="14" fill="#0f7a54"/>
+              <rect x="65"  y="0" width="13" height="14" fill="#0f7a54"/>
+              <rect x="78"  y="0" width="13" height="14" fill="#0f7a54"/>
+              <rect x="91"  y="0" width="13" height="14" fill="#0f7a54"/>
+              <rect x="104" y="0" width="13" height="14" fill="#0f7a54"/>
+              <rect x="117" y="0" width="13" height="14" fill="#0f7a54"/>
+              <rect x="130" y="0" width="13" height="14" fill="#b76e00"/>
+              <rect x="143" y="0" width="13" height="14" fill="#0f7a54"/>
+              <rect x="156" y="0" width="13" height="14" fill="#0f7a54"/>
+              <rect x="169" y="0" width="13" height="14" fill="#0f7a54"/>
+              <rect x="182" y="0" width="13" height="14" fill="#0f7a54"/>
+              <rect x="195" y="0" width="13" height="14" fill="#0f7a54"/>
+              <rect x="208" y="0" width="13" height="14" fill="#0f7a54"/>
+              <rect x="221" y="0" width="13" height="14" fill="#0f7a54"/>
+              <rect x="234" y="0" width="13" height="14" fill="#0f7a54"/>
+              <rect x="247" y="0" width="13" height="14" fill="#0f7a54"/>
+              <rect x="260" y="0" width="13" height="14" fill="#0f7a54"/>
+              <rect x="273" y="0" width="13" height="14" fill="#0f7a54"/>
+              <rect x="286" y="0" width="13" height="14" fill="#0f7a54"/>
+              <rect x="299" y="0" width="13" height="14" fill="#0f7a54"/>
+            </g>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Calibration recency -->
+      <div class="card">
+        <div class="card-h">
+          <h3>Calibration</h3>
+          <span class="meta">isotonic · last refit 3d ago</span>
+        </div>
+        <div class="card-b">
+          <div class="stack-meta">
+            <div class="row"><span class="l">Brier (90d)</span><span class="v">0.218</span></div>
+            <div class="row"><span class="l">ECE (90d)</span><span class="v">0.012</span></div>
+            <div class="row"><span class="l">n_observations</span><span class="v">8,421</span></div>
+            <div class="row"><span class="l">Worst bucket</span><span class="v">0.70-0.75 · obs 0.61</span></div>
+          </div>
+          <!-- mini reliability sparkline -->
+          <svg viewBox="0 0 320 80" width="100%" height="80" style="margin-top:8px">
+            <line x1="0" y1="80" x2="320" y2="0" stroke="#c5ccd6" stroke-dasharray="3 4"/>
+            <polyline points="0,80 32,72 64,60 96,52 128,42 160,32 192,28 224,22 256,18 288,12 320,4"
+                      fill="none" stroke="#2563a9" stroke-width="2"/>
+            <text x="2" y="78" class="scatter-axes">predicted 0</text>
+            <text x="270" y="14" class="scatter-axes">1.0</text>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Drift summary -->
+      <div class="card">
+        <div class="card-h">
+          <h3>Drift Snapshot</h3>
+          <span class="meta">vs training distribution</span>
+        </div>
+        <div class="card-b">
+          <div class="stack-meta">
+            <div class="row"><span class="l">Features flagged</span><span class="v" style="color:var(--warning)">3 / 142</span></div>
+            <div class="row"><span class="l">Worst KL</span><span class="v">vpin · 0.184</span></div>
+            <div class="row"><span class="l">Drift-triggered retrain</span><span class="v">cooldown 14h</span></div>
+            <div class="row"><span class="l">Next scheduled retrain</span><span class="v">in 4d 06h</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Recent audit events -->
+      <div class="card">
+        <div class="card-h">
+          <h3>Recent Events</h3>
+          <span class="meta">audit chain verified ✓</span>
+        </div>
+        <div class="card-b" style="padding:8px 14px">
+          <div class="events">
+            <div class="ev"><span class="t">18:44:00Z</span><span class="k mlp">META_LABEL</span><span class="m">AAPL p=0.66 cal=0.61 · meta_v1.7.2</span></div>
+            <div class="ev"><span class="t">18:44:00Z</span><span class="k bs">BET_SIZED</span><span class="m">AAPL 1.20% · kelly_cap, atr_cap</span></div>
+            <div class="ev"><span class="t">18:43:12Z</span><span class="k os">ORDER</span><span class="m">NVDA buy 612 @ vwap</span></div>
+            <div class="ev"><span class="t">18:42:01Z</span><span class="k rl">RL_SHADOW</span><span class="m">paired t=0.81, p=0.42 (insig)</span></div>
+            <div class="ev"><span class="t">18:30:14Z</span><span class="k sg">SIGNAL</span><span class="m">ts_momentum fired on 14 symbols</span></div>
+            <div class="ev"><span class="t">17:58:00Z</span><span class="k br">BREAKER</span><span class="m">data_gap warn cleared (BABA)</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Freshness summary -->
+      <div class="card">
+        <div class="card-h">
+          <h3>Source Freshness</h3>
+          <span class="meta">worst-of per source · open Monitoring for full heatmap</span>
+        </div>
+        <div class="card-b">
+          <div class="stack-meta">
+            <div class="row"><span class="l">bars</span><span class="v"><span class="breaker ok">2s</span></span></div>
+            <div class="row"><span class="l">features</span><span class="v"><span class="breaker ok">5s</span></span></div>
+            <div class="row"><span class="l">signals</span><span class="v"><span class="breaker ok">5s</span></span></div>
+            <div class="row"><span class="l">onchain</span><span class="v"><span class="breaker ok">5m 12s</span></span></div>
+            <div class="row"><span class="l">sentiment</span><span class="v"><span class="breaker warn">1m 24s</span></span></div>
+            <div class="row"><span class="l">factor_model</span><span class="v"><span class="breaker warn">1h</span></span></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- Bottom breaker strip -->
+  <footer style="border-top:1px solid var(--line); background:var(--surface-muted); padding:8px 20px">
+    <div class="breakers">
+      <span class="breaker ok">✓ max_single_position · 1.4% / 5.0%</span>
+      <span class="breaker ok">✓ max_family_allocation · 12% / 30%</span>
+      <span class="breaker ok">✓ max_gross_exposure · 24.6% / 50%</span>
+      <span class="breaker ok">✓ daily_loss · 0.00% / 2.50%</span>
+      <span class="breaker ok">✓ drawdown_throttle · 1.41% / 8.00%</span>
+      <span class="breaker warn">⚠ max_crypto_allocation · 8.4% / 10%</span>
+      <span class="breaker ok">✓ broker_heartbeat</span>
+      <span class="breaker ok">✓ data_gap</span>
+    </div>
+  </footer>
+
+</body>
+</html>

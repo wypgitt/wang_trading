@@ -1,0 +1,475 @@
+"""Pydantic DTOs for the BFF.
+
+These mirror docs/web_app_design_v2.md §27 and docs/api_contracts_v2.md.
+Update both when shape changes; the design doc is the source of truth.
+
+The DTOs are intentionally all in one file for the initial scaffold. Split
+into a package when individual sections grow past ~150 lines.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+from .envelope import RegimeSnapshot
+
+Action = Literal[
+    "BUY", "SELL", "WATCH", "MODEL_REQUIRED", "NO_DATA", "ERROR"
+]
+
+Side = Literal[-1, 0, 1]
+
+
+# ---------- Shared ----------
+
+class ShapContributor(BaseModel):
+    feature: str
+    value: float
+    contribution: float
+    abs_contribution: float
+    percentile: float
+
+
+class SizingLayer(BaseModel):
+    name: Literal["afml", "kelly", "vol", "atr", "final"]
+    value: float
+    capped: bool
+    cap_reason: str | None = None
+
+
+class SizingWaterfall(BaseModel):
+    layers: list[SizingLayer]
+    constraints_applied: list[str]
+    side: Side
+    final: float
+
+
+class DecisionChainStep(BaseModel):
+    name: Literal[
+        "bars", "features", "signals", "regime", "model",
+        "calibration", "sizing", "target", "cost", "risk", "execution",
+    ]
+    status: Literal["ok", "warning", "error", "skipped", "unknown"]
+    value: str | float | None = None
+    count: int | None = None
+    timestamp: datetime | None = None
+    latency_seconds: float | None = None
+    message: str | None = None
+
+
+# ---------- Trade Ideas ----------
+
+class TradeIdea(BaseModel):
+    symbol: str
+    action: Action
+    target_weight: float
+    target_notional: float
+    estimated_quantity: float | None = None
+    latest_price: float | None = None
+    latest_bar_at: datetime | None = None
+    bar_type: str | None = None
+    bars_loaded: int = 0
+    feature_rows: int = 0
+    signal_count: int = 0
+    top_signal_family: str | None = None
+    top_signal_side: Side | None = None
+    top_signal_confidence: float | None = None
+    avg_signal_confidence: float | None = None
+    meta_probability: float | None = None
+    calibrated_probability: float | None = None
+    regime: RegimeSnapshot | None = None
+    regime_fit_score: float | None = None
+    bet_size: float | None = None
+    sizing_constraints_applied: list[str] = Field(default_factory=list)
+    strategy: str | None = None
+    reason: str = ""
+    expected_cost_bps: float | None = None
+    top_shap_feature: ShapContributor | None = None
+    track_record_win_rate: float | None = None
+    track_record_n: int | None = None
+    stage_latency_seconds: dict[str, float] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+
+
+class TradeIdeasTotals(BaseModel):
+    buy: int = 0
+    sell: int = 0
+    watch: int = 0
+    model_required: int = 0
+    no_data: int = 0
+    error: int = 0
+    gross_target_weight: float = 0.0
+    net_target_weight: float = 0.0
+
+
+class TradeIdeasResponse(BaseModel):
+    idea_count: int
+    totals: TradeIdeasTotals
+    ideas: list[TradeIdea]
+
+
+# ---------- Per-family signal metadata (typed union) ----------
+
+class TsMomentumMetadata(BaseModel):
+    family: Literal["ts_momentum"] = "ts_momentum"
+    lookbacks: list[int]
+    weights: list[float]
+    z_scores: dict[str, float]
+    aggregate: float
+
+
+class CsMomentumMetadata(BaseModel):
+    family: Literal["cs_momentum"] = "cs_momentum"
+    decile_rank: float
+    lookback_return: float
+    z_score: float
+    skip_periods: int
+
+
+class MeanReversionMetadata(BaseModel):
+    family: Literal["mean_reversion"] = "mean_reversion"
+    half_life: float | None = None
+    adf_pvalue: float | None = None
+    z_score: float | None = None
+    entry_threshold: float | None = None
+    exit_threshold: float | None = None
+
+
+class StatArbMetadata(BaseModel):
+    family: Literal["stat_arb"] = "stat_arb"
+    pair_symbol: str
+    cointegration_pvalue: float | None = None
+    hedge_ratio: float | None = None
+    spread_z_score: float | None = None
+    spread_halflife: float | None = None
+
+
+class FuturesCarryMetadata(BaseModel):
+    family: Literal["futures_carry"] = "futures_carry"
+    front_price: float
+    back_price: float
+    days_to_expiry: int
+    carry: float
+
+
+class VrpMetadata(BaseModel):
+    family: Literal["vrp"] = "vrp"
+    iv: float
+    rv: float
+    vrp: float
+    vrp_percentile_rank: float
+    regime_modifier: dict[str, float] = Field(default_factory=dict)
+
+
+FamilyMetadata = (
+    TsMomentumMetadata
+    | CsMomentumMetadata
+    | MeanReversionMetadata
+    | StatArbMetadata
+    | FuturesCarryMetadata
+    | VrpMetadata
+)
+
+
+# ---------- Trade Idea Detail ----------
+
+class SignalRow(BaseModel):
+    timestamp: datetime
+    family: str
+    side: Side
+    confidence: float
+
+
+class ModelInferenceDetail(BaseModel):
+    source: str
+    version: str | None = None
+    run_id: str | None = None
+    alias: str | None = None
+    trained_at: datetime | None = None
+    n_training_events: int | None = None
+    calibration: str | None = None
+    calibration_age_days: float | None = None
+    feature_hash: str | None = None
+
+
+class BarLatest(BaseModel):
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    vwap: float | None = None
+    tick_count: int | None = None
+    buy_volume: float | None = None
+    sell_volume: float | None = None
+    imbalance: float | None = None
+    threshold: float | None = None
+    bar_duration_seconds: float | None = None
+
+
+class BarSummary(BaseModel):
+    bar_type: str | None = None
+    n: int
+    latest: BarLatest | None = None
+
+
+class MicrostructureSnapshot(BaseModel):
+    kyle_lambda: float | None = None
+    amihud_lambda: float | None = None
+    roll_spread: float | None = None
+    vpin: float | None = None
+    hasbrouck_lambda: float | None = None
+    order_flow_imbalance: float | None = None
+    trade_intensity: float | None = None
+
+
+class StructuralBreakSnapshot(BaseModel):
+    cusum: float | None = None
+    sadf: float | None = None
+    gsadf: float | None = None
+    chow_p_value: float | None = None
+    regime_break_detected: bool | None = None
+
+
+class OnchainSnapshot(BaseModel):
+    exchange_inflow: float | None = None
+    exchange_outflow: float | None = None
+    net_flow: float | None = None
+    whale_transactions: int | None = None
+    active_addresses: int | None = None
+    stablecoin_supply_change_24h: float | None = None
+
+
+class SentimentSnapshot(BaseModel):
+    score: float
+    momentum_24h: float | None = None
+    momentum_7d: float | None = None
+    article_count_24h: int | None = None
+    article_count_7d: int | None = None
+
+
+class CostForecast(BaseModel):
+    expected_total_bps: float
+    expected_slippage_bps: float | None = None
+    expected_market_impact_bps: float | None = None
+    expected_commission_bps: float | None = None
+    algo: str | None = None
+    window_days: int | None = None
+    n_observations: int | None = None
+    vs_twap_bps: float | None = None
+    vs_vwap_bps: float | None = None
+
+
+class TrackRecordBucket(BaseModel):
+    n: int
+    win_rate: float
+    avg_return: float
+    median_holding_bars: float | None = None
+
+
+class TrackRecordSummary(BaseModel):
+    symbol: str
+    family: str | None = None
+    trailing_90d: TrackRecordBucket | None = None
+    trailing_180d: TrackRecordBucket | None = None
+    all_time: TrackRecordBucket | None = None
+
+
+class FeatureSnapshot(BaseModel):
+    rows: int
+    latest: dict[str, float] = Field(default_factory=dict)
+
+
+class AlertSummary(BaseModel):
+    alert_id: str
+    severity: Literal["info", "warning", "critical"]
+    timestamp: datetime
+    title: str
+    source: str
+    message: str
+    acknowledged: bool = False
+
+
+class AuditSummary(BaseModel):
+    entry_id: str
+    event_type: str
+    timestamp: datetime
+    symbol: str | None = None
+
+
+class TradeIdeaDetail(BaseModel):
+    idea: TradeIdea
+    chain: list[DecisionChainStep] = Field(default_factory=list)
+    signals: list[SignalRow] = Field(default_factory=list)
+    signal_metadata: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    model: ModelInferenceDetail | None = None
+    shap: list[ShapContributor] = Field(default_factory=list)
+    sizing: SizingWaterfall | None = None
+    features: FeatureSnapshot | None = None
+    microstructure: MicrostructureSnapshot | None = None
+    structural_breaks: StructuralBreakSnapshot | None = None
+    onchain: OnchainSnapshot | None = None
+    sentiment: SentimentSnapshot | None = None
+    bars: BarSummary | None = None
+    cost_forecast: CostForecast | None = None
+    track_record: TrackRecordSummary | None = None
+    nl_explanation: str | None = None
+    related_alerts: list[AlertSummary] = Field(default_factory=list)
+    related_audit_entries: list[AuditSummary] = Field(default_factory=list)
+
+
+# ---------- Portfolio simulator ----------
+
+class SimulateRequest(BaseModel):
+    apply: Literal["current_portfolio", "current_targets", "both"] = "current_targets"
+    filter: dict[str, Any] | None = None
+
+
+class SimulateResponse(BaseModel):
+    projected: dict[str, Any]
+    deltas: dict[str, float]
+    breaker_headroom_after: dict[str, float]
+    expected_cost_usd: float
+    expected_cost_bps: float
+    estimated_duration_seconds: float
+    affected_ideas: list[dict[str, Any]]
+    warnings: list[str] = Field(default_factory=list)
+
+
+# ---------- Scenarios ----------
+
+class ScenarioShocks(BaseModel):
+    symbol_pct: dict[str, float] | None = None
+    vol_multiplier: float | None = None
+    correlation_target: float | None = None
+    factor_shift: dict[str, float] | None = None
+    liquidity_multiplier: float | None = None
+
+
+class ScenarioRequest(BaseModel):
+    shocks: ScenarioShocks
+    apply_to: Literal["current_portfolio", "current_targets", "both"] = "current_targets"
+
+
+class AffectedIdea(BaseModel):
+    symbol: str
+    old_target: float
+    new_target: float
+    flipped: bool
+
+
+class SuggestedHedge(BaseModel):
+    long: str
+    short: str
+    ratio: float
+
+
+class ScenarioResult(BaseModel):
+    pnl_impact_usd: float
+    drawdown_impact: float
+    factor_exposure_deltas: dict[str, float] = Field(default_factory=dict)
+    breaker_headroom: dict[str, float] = Field(default_factory=dict)
+    affected_ideas: list[AffectedIdea] = Field(default_factory=list)
+    suggested_hedges: list[SuggestedHedge] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+# ---------- Replay ----------
+
+class ReplaySnapshot(BaseModel):
+    ts: datetime
+    model_version: str | None = None
+    regime: RegimeSnapshot | None = None
+    ideas: list[TradeIdea]
+    audit_chain_verified_to: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+# ---------- Preflight ----------
+
+class PreflightCheck(BaseModel):
+    name: str
+    status: Literal["PASS", "FAIL", "SKIPPED", "UNKNOWN"]
+    evaluated_at: datetime | None = None
+    reason: str | None = None
+    runbook: str | None = None
+
+
+class PreflightStatus(BaseModel):
+    overall: Literal["READY", "BLOCKED", "UNKNOWN"]
+    checks: list[PreflightCheck]
+    operator_sentinel: dict[str, Any] | None = None
+    capital_deployment: dict[str, Any] | None = None
+    infra_probes: dict[str, str] = Field(default_factory=dict)
+    reconciliation: dict[str, Any] | None = None
+
+
+# ---------- Calibration ----------
+
+class CalibrationBucket(BaseModel):
+    predicted_bucket_lo: float
+    predicted_bucket_hi: float
+    predicted_mean: float
+    observed_rate: float
+    count: int
+
+
+class CalibrationReport(BaseModel):
+    window: str
+    buckets: list[CalibrationBucket]
+    brier_score: float | None = None
+    ece: float | None = None
+    as_of: datetime
+
+
+# ---------- RL Shadow ----------
+
+class RlShadowMetrics(BaseModel):
+    total_return: float
+    sharpe: float
+    max_drawdown: float
+    n_trades: int
+
+
+class RlShadowPromotion(BaseModel):
+    eligible: bool
+    reasons: list[str] = Field(default_factory=list)
+    months_span: float | None = None
+
+
+class RlShadowDecision(BaseModel):
+    ts: datetime
+    hrp_target: dict[str, float]
+    rl_target: dict[str, float]
+    executed_target: dict[str, float]
+
+
+class RlShadowReport(BaseModel):
+    window_days: int
+    n_observations: int
+    hrp_metrics: RlShadowMetrics
+    rl_metrics: RlShadowMetrics
+    paired_t_stat: float | None = None
+    p_value: float | None = None
+    rl_is_better: bool | None = None
+    significance: Literal["significant", "trending", "insignificant"] = "insignificant"
+    promotion_eligibility: RlShadowPromotion
+    recent_decisions: list[RlShadowDecision] = Field(default_factory=list)
+
+
+# ---------- Freshness Heatmap ----------
+
+class FreshnessThresholds(BaseModel):
+    ok: float
+    warn: float
+
+
+class FreshnessHeatmap(BaseModel):
+    as_of: datetime
+    rows: list[str]
+    columns: list[str]
+    values: dict[str, dict[str, float | None]]
+    thresholds: dict[str, FreshnessThresholds]

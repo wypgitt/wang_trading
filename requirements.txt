@@ -75,3 +75,16 @@ cryptography>=41.0.0
 # ============================================
 stable_baselines3>=2.2.0
 gymnasium>=0.29.0
+
+# ============================================
+# Web BFF (src/web/) — FastAPI cockpit API
+# ============================================
+fastapi>=0.110
+uvicorn[standard]>=0.29
+uvloop>=0.19
+psycopg[binary,pool]>=3.1
+httpx>=0.27
+prometheus-client>=0.20
+opentelemetry-api>=1.25
+opentelemetry-sdk>=1.25
+opentelemetry-instrumentation-fastapi>=0.46
