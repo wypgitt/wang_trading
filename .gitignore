@@ -33,6 +33,21 @@ logs/
 # Data
 data/
 
+# MLflow local store
+mlflow.db
+mlruns/
+
+# Roles (real file is per-host; commit only roles.example.yaml)
+config/roles.yaml
+
+# Frontend
+apps/web/node_modules/
+apps/web/dist/
+apps/web/.pnpm-store/
+
+# BFF tmpfs path (dev fallback)
+/tmp/wang/
+
 # IDE
 .idea/
 .vscode/

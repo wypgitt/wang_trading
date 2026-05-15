@@ -1,0 +1,107 @@
+@import "./tokens.css";
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-base);
+  font-size: var(--font-size-body);
+  font-feature-settings:
+    "tnum" 1,
+    "lnum" 1;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+table {
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Reusable action pills (match wireframe .pill.*) */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 64px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+.pill-buy {
+  color: var(--buy);
+  background: var(--buy-bg);
+}
+.pill-sell {
+  color: var(--sell);
+  background: var(--sell-bg);
+}
+.pill-watch {
+  color: var(--watch);
+  background: var(--watch-bg);
+}
+.pill-model {
+  color: var(--model);
+  background: var(--model-bg);
+}
+.pill-error {
+  color: var(--critical);
+  background: var(--sell-bg);
+}
+.pill-nodata {
+  color: var(--muted);
+  background: #eef1f6;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+.num-pos {
+  color: var(--buy);
+}
+.num-neg {
+  color: var(--sell);
+}
+
+.btn {
+  height: var(--control-height);
+  padding: 0 12px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  font-weight: 620;
+  color: var(--ink);
+}
+.btn:hover {
+  background: var(--surface-muted);
+}
+.btn-primary {
+  background: #186b58;
+  color: #fff;
+  border-color: transparent;
+}
+.btn-primary:hover {
+  background: #14604f;
+}

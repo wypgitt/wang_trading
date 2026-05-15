@@ -1,0 +1,107 @@
+/*
+ * Design tokens — derived from docs/wireframes/command_center.html and
+ * docs/web_app_design_v2.md §8 (Visual Design System).
+ *
+ * Color tokens are the v1 baseline plus v2 additions:
+ *   regime-*, diff-*, shadow.
+ *
+ * Typography per design v2 §8.3 (carried from v1):
+ *   - Base font: Inter / system UI, 13 px.
+ *   - Tabular numbers globally.
+ *
+ * Spacing per design v2 §8.4 (carried from v1):
+ *   - Panel gap 12 px, panel radius 6 px.
+ *   - Compact row 36 px, comfortable row 44 px.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* Surfaces */
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --surface-muted: #f8fafc;
+  --ink: #111827;
+  --muted: #667085;
+  --line: #d7dde6;
+
+  /* Action colors (pills, tiles, badges) */
+  --buy: #0f7a54;
+  --buy-bg: #e7f6ef;
+  --sell: #b42318;
+  --sell-bg: #fdeceb;
+  --watch: #8a6100;
+  --watch-bg: #fff4d6;
+  --model: #285dad;
+  --model-bg: #eaf2ff;
+
+  /* Status / severity */
+  --ok: #16794c;
+  --warning: #b76e00;
+  --critical: #b42318;
+  --info: #2563a9;
+
+  /* Regime tokens (v2 §8.2) */
+  --regime-up: #0f7a54;
+  --regime-down: #b42318;
+  --regime-mr: #7c3aed;
+  --regime-hv: #b76e00;
+
+  /* RL shadow accent (v2 §8.2) */
+  --shadow: #7c3aed;
+
+  /* Diff rail tokens (v2 §8.2) */
+  --diff-new: #0f7a54;
+  --diff-changed: #2563a9;
+  --diff-cleared: #667085;
+
+  /* Status-bar (dark) surface — pulled from wireframe .status-bar */
+  --statusbar-bg: #0b1220;
+  --statusbar-line: #1a2335;
+  --statusbar-ink: #e6ecf5;
+  --statusbar-label: #8aa0bf;
+  --statusbar-sub: #b6c4d8;
+  --statusbar-pos: #6fe2ad;
+  --statusbar-neg: #f7a4a0;
+
+  /* Diff rail (dark) surface */
+  --diffrail-bg: #1a2335;
+  --diffrail-ink: #cfd9e8;
+  --diffrail-chip-bg: #25324f;
+  --diffrail-chip-line: #344164;
+
+  /* Typography (v2 §8.3 / wireframe) */
+  --font-base:
+    "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  --font-size-body: 13px;
+  --font-size-table: 12px;
+  --font-size-heading-sm: 13px;
+  --font-size-heading-md: 15px;
+  --font-size-heading-lg: 17px;
+  --font-size-page-title: 22px;
+  --font-size-label: 10px;
+  --font-size-meta: 11px;
+
+  /* Spacing & density (v2 §8.4) */
+  --page-padding: 16px;
+  --panel-gap: 12px;
+  --panel-radius: 6px;
+  --row-height-compact: 36px;
+  --row-height-comfortable: 44px;
+  --icon-button-size: 32px;
+  --control-height: 32px;
+
+  /* Diff strip presentation (v2 §7.4) */
+  --diffrail-height: 28px;
+
+  /* Sidebar (v2 §7.2) */
+  --sidebar-width: 220px;
+  --sidebar-collapsed-width: 64px;
+
+  /* Shadow */
+  --shadow-panel: 0 1px 2px rgba(16, 24, 40, 0.05);
+
+  font-family: var(--font-base);
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}

@@ -1,0 +1,90 @@
+/* Status bar — matches docs/wireframes/command_center.html .status-bar */
+
+.sb {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: grid;
+  grid-template-columns:
+    96px 96px 80px 84px 84px 100px 120px 156px 100px 100px 100px 100px 110px
+    1fr;
+  gap: 1px;
+  background: var(--statusbar-bg);
+  color: var(--statusbar-ink);
+  border-bottom: 1px solid var(--statusbar-line);
+}
+
+.sb-cell {
+  padding: 8px 10px 7px;
+  background: var(--statusbar-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: pointer;
+  min-height: 50px;
+  border: 0;
+  outline: none;
+}
+.sb-cell:hover {
+  background: #131c30;
+}
+.sb-cell:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: -2px;
+}
+
+.sb-label {
+  font-size: var(--font-size-label);
+  letter-spacing: 0.04em;
+  color: var(--statusbar-label);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.sb-value {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+.sb-num {
+  font-variant-numeric: tabular-nums;
+}
+.sb-pos {
+  color: var(--statusbar-pos);
+}
+.sb-neg {
+  color: var(--statusbar-neg);
+}
+
+.sb-sub {
+  font-size: var(--font-size-meta);
+  color: var(--statusbar-sub);
+  font-variant-numeric: tabular-nums;
+}
+
+.sb-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: var(--font-size-label);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.sb-badge-ok {
+  background: rgba(22, 121, 76, 0.18);
+  color: var(--statusbar-pos);
+}
+.sb-badge-warn {
+  background: rgba(183, 110, 0, 0.22);
+  color: #ffd687;
+}
+.sb-badge-crit {
+  background: rgba(180, 35, 24, 0.22);
+  color: var(--statusbar-neg);
+}
+.sb-badge-regime-up {
+  background: rgba(15, 122, 84, 0.22);
+  color: var(--statusbar-pos);
+}

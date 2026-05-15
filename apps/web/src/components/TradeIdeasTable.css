@@ -1,0 +1,126 @@
+.ideas-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--panel-radius);
+  box-shadow: var(--shadow-panel);
+  overflow: hidden;
+}
+
+.ideas-table {
+  width: 100%;
+  font-size: var(--font-size-table);
+  font-variant-numeric: tabular-nums;
+}
+
+.ideas-table th,
+.ideas-table td {
+  padding: 7px 10px;
+  text-align: right;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.ideas-table th {
+  background: var(--surface-muted);
+  color: #526071;
+  font-size: var(--font-size-label);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+  border-bottom: 1px solid var(--line);
+}
+
+.ideas-table td {
+  border-bottom: 1px solid #edf0f5;
+}
+
+.ideas-table tbody tr:hover td {
+  background: #fafbfd;
+  cursor: pointer;
+}
+
+.ideas-table .col-text {
+  text-align: left;
+}
+
+.ideas-table .col-sym {
+  font-weight: 760;
+  font-size: 13px;
+}
+
+.ideas-table .col-wide {
+  white-space: normal;
+}
+
+.ideas-table .col-reason {
+  max-width: 460px;
+  color: #38465a;
+}
+
+/* Skeleton loading */
+.skel-row td {
+  height: 28px;
+}
+.skel-block {
+  display: inline-block;
+  width: 80%;
+  height: 10px;
+  background: linear-gradient(90deg, #eef1f6 0%, #f6f8fb 50%, #eef1f6 100%);
+  background-size: 200% 100%;
+  border-radius: 4px;
+  animation: skel-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes skel-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* Empty state */
+.ideas-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+}
+
+/* Error state */
+.ideas-error {
+  background: #fff;
+  border: 1px solid var(--sell);
+  border-left: 4px solid var(--sell);
+  border-radius: var(--panel-radius);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--ink);
+}
+.ideas-error-title {
+  font-weight: 700;
+  color: var(--critical);
+}
+.ideas-error-msg {
+  color: #38465a;
+  font-size: 12px;
+}
+.ideas-error-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ideas-error-list code {
+  background: var(--sell-bg);
+  color: var(--critical);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+}
