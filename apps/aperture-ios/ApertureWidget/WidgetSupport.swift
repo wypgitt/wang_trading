@@ -20,6 +20,7 @@ enum WTok {
     static let buy = adaptive(0x1ECB8B, 0x0A8F5E)
     static let sell = adaptive(0xF6465D, 0xCC2436)
     static let watch = adaptive(0x4D9FFF, 0x1F74E0)
+    static let warn = adaptive(0xF0A93B, 0xB9760F)
     static let accent = adaptive(0x7C5CFF, 0x6A45E8)
     static let grad = LinearGradient(colors: [hex(0x7C5CFF), hex(0x4D9FFF)], startPoint: .topLeading, endPoint: .bottomTrailing)
 }

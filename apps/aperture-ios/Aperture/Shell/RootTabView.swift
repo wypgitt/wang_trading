@@ -6,7 +6,9 @@ struct RootTabView: View {
     @State private var selection = Int(ProcessInfo.processInfo.environment["APERTURE_TAB"] ?? "0") ?? 0
     @State private var ideasPath = NavigationPath()
     @State private var marketsPath = NavigationPath()
+    @State private var strategiesPath = NavigationPath()
     @State private var morePath = NavigationPath()
+    @EnvironmentObject private var router: Router
 
     var body: some View {
         TabView(selection: $selection) {
@@ -16,7 +18,7 @@ struct RootTabView: View {
                 .tabItem { Label("Markets", systemImage: "chart.line.uptrend.xyaxis") }.tag(1)
             NavigationStack(path: $ideasPath) { IdeasView().apertureDestinations() }
                 .tabItem { Label("Ideas", systemImage: "bolt.fill") }.tag(2)
-            NavigationStack { StrategiesView().apertureDestinations() }
+            NavigationStack(path: $strategiesPath) { StrategiesView().apertureDestinations() }
                 .tabItem { Label("Strategies", systemImage: "square.grid.2x2.fill") }.tag(3)
             NavigationStack(path: $morePath) { MoreView().apertureDestinations() }
                 .tabItem { Label("More", systemImage: "ellipsis.circle.fill") }.tag(4)
@@ -28,6 +30,38 @@ struct RootTabView: View {
             case "model": morePath.append(Readiness.model)
             default: break
             }
+            // Drain a link set before the view subscribed (cold-launch from a
+            // notification tap) — onChange below won't fire for a pre-set value.
+            if let link = router.pending {
+                route(link)
+                router.pending = nil
+            }
+        }
+        // A notification tap / widget deep-link while running → navigate.
+        .onChange(of: router.pending) { _, link in
+            guard let link else { return }
+            route(link)
+            router.pending = nil
+        }
+    }
+
+    private func route(_ link: DeepLink) {
+        switch link {
+        case .ideasList:
+            selection = 2; ideasPath = NavigationPath()
+        case .idea(let symbol):
+            selection = 2
+            var p = NavigationPath()
+            if let idea = MockData.idea(for: symbol) { p.append(idea) }
+            ideasPath = p
+        case .symbol(let symbol):
+            selection = 1
+            var p = NavigationPath(); p.append(MockData.sym(symbol)); marketsPath = p
+        case .strategy(let id):
+            selection = 3
+            var p = NavigationPath(); p.append(MockData.strategy(id)); strategiesPath = p
+        case .tab(let id):
+            selection = ["home": 0, "markets": 1, "ideas": 2, "strategies": 3, "more": 4][id] ?? 0
         }
     }
 }
