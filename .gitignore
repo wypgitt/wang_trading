@@ -30,8 +30,10 @@ config/secrets.enc
 # Logs
 logs/
 
-# Data
+# Data (engine data dirs). Re-include the web app's data layer, which is source.
 data/
+!apps/aperture-web/src/data/
+!apps/aperture-web/src/data/**
 
 # MLflow local store
 mlflow.db
