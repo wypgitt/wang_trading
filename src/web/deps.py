@@ -19,16 +19,40 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from .services.markets_service import MarketsService
+from .services.model_service import ModelService
 from .services.preflight_service import PreflightService
 from .services.regime_service import RegimeService
 from .services.replay_service import ReplayService
 from .services.scenario_service import ScenarioService
+from .services.signals_service import SignalsService
+from .services.symbols_service import SymbolsService
 from .services.trade_ideas_service import TradeIdeasService
 
 
 @lru_cache(maxsize=1)
 def get_trade_ideas_service() -> TradeIdeasService:
     return TradeIdeasService()
+
+
+@lru_cache(maxsize=1)
+def get_markets_service() -> MarketsService:
+    return MarketsService()
+
+
+@lru_cache(maxsize=1)
+def get_symbols_service() -> SymbolsService:
+    return SymbolsService()
+
+
+@lru_cache(maxsize=1)
+def get_signals_service() -> SignalsService:
+    return SignalsService()
+
+
+@lru_cache(maxsize=1)
+def get_model_service() -> ModelService:
+    return ModelService()
 
 
 @lru_cache(maxsize=1)
@@ -55,6 +79,10 @@ def reset_service_singletons() -> None:
     """Clear all cached singletons. Tests call this between cases."""
 
     get_trade_ideas_service.cache_clear()
+    get_markets_service.cache_clear()
+    get_symbols_service.cache_clear()
+    get_signals_service.cache_clear()
+    get_model_service.cache_clear()
     get_regime_service.cache_clear()
     get_scenario_service.cache_clear()
     get_replay_service.cache_clear()
@@ -62,10 +90,14 @@ def reset_service_singletons() -> None:
 
 
 __all__ = [
+    "get_markets_service",
+    "get_model_service",
     "get_preflight_service",
     "get_regime_service",
     "get_replay_service",
     "get_scenario_service",
+    "get_signals_service",
+    "get_symbols_service",
     "get_trade_ideas_service",
     "reset_service_singletons",
 ]

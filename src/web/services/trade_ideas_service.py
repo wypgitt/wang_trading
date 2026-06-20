@@ -1,13 +1,12 @@
 """Bridge to the existing ``src.ui.trade_ideas`` report.
 
-For Phase 1, this service prefers the tmpfs snapshot written by
-``src.execution.trade_idea_publisher`` and falls back to a synchronous
-regenerate (with a 30 s in-process LRU) when the snapshot is missing,
-stale, or unparsable. The fallback re-uses the live-bootstrap-in-paper-
-rehearsal report and adapts it to the v2 DTOs. Fields the existing
-module already emits map directly; fields v2 adds (regime,
+This service is READ-ONLY: it reads the tmpfs snapshot written by
+``src.execution.trade_idea_publisher`` and never regenerates it. A
+missing / stale / unparsable snapshot degrades to ``(None, None)`` so
+the BFF never runs the engine pipeline on the request path. Fields the
+engine already emits map directly; v2-only fields (regime,
 regime_fit_score, expected cost, top_shap_feature, track_record_*) are
-populated by later services or left null when not yet wired.
+left null until their producer is wired (the honesty contract).
 
 The cache contract is documented in docs/backend_design.md §24 #5 and
 mirrored by ``src.execution.trade_idea_publisher``.
@@ -18,8 +17,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import threading
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -34,6 +31,11 @@ log = logging.getLogger(__name__)
 
 
 _ENV_VAR = "WANG_TRADE_IDEAS_PATH"
+
+# Mirrors ``trade_idea_publisher.SNAPSHOT_SCHEMA_VERSION`` (kept local to avoid
+# an import cycle between the BFF and the execution package). A mismatch is
+# logged but still parsed — forward/backward tolerant across the boundary.
+SNAPSHOT_SCHEMA_VERSION = 1
 
 
 def _default_tmpfs_path() -> Path:
@@ -63,12 +65,16 @@ def _default_tmpfs_path() -> Path:
 class TmpfsTradeIdeasCache:
     """Read-only consumer of the publisher's snapshot file.
 
-    ``read()`` returns ``(response, staleness_seconds)`` when the file
-    exists, parses, and is younger than ``max_age_seconds`` (measured
-    against the snapshot's embedded ``as_of`` field — not the file
-    mtime, so clock drift between the publisher and BFF host stays
-    visible in metrics). Returns ``None`` otherwise; callers should
-    treat ``None`` as "fall back to sync regenerate".
+    ``read()`` returns ``(response, staleness_seconds)`` whenever the file
+    exists and parses, and ``None`` only when it is missing / unreadable /
+    unparsable. Staleness is measured against the snapshot's embedded
+    ``as_of`` (not file mtime, so publisher↔BFF clock drift stays visible).
+
+    Crucially it does NOT reject a stale snapshot: with the regenerate path
+    removed, rejecting on age would turn "stale" into a false "unavailable".
+    A stale snapshot is shipped with its staleness so the route can flag it
+    (the read-only "degrade but ship" contract). ``max_age_seconds`` is kept
+    as an advisory reference for callers; the read no longer gates on it.
     """
 
     def __init__(
@@ -78,7 +84,7 @@ class TmpfsTradeIdeasCache:
         max_age_seconds: float = 90.0,
     ) -> None:
         self.path = Path(path) if path else _default_tmpfs_path()
-        self.max_age_seconds = float(max_age_seconds)
+        self.max_age_seconds = float(max_age_seconds)  # advisory; read() never rejects on age
 
     def read(self) -> tuple[TradeIdeasResponse, float] | None:
         try:
@@ -104,6 +110,17 @@ class TmpfsTradeIdeasCache:
             log.warning("trade idea cache missing as_of/report path=%s", self.path)
             return None
 
+        version = payload.get("schema_version")
+        if version is not None and version != SNAPSHOT_SCHEMA_VERSION:
+            # Tolerant: parse anyway, but make the boundary mismatch loud.
+            log.warning(
+                "trade idea snapshot schema_version=%s expected=%s path=%s "
+                "(coordinate the engine->BFF format change)",
+                version,
+                SNAPSHOT_SCHEMA_VERSION,
+                self.path,
+            )
+
         try:
             as_of = datetime.fromisoformat(str(as_of_raw).replace("Z", "+00:00"))
         except ValueError:
@@ -113,14 +130,10 @@ class TmpfsTradeIdeasCache:
             as_of = as_of.replace(tzinfo=timezone.utc)
 
         staleness = max(0.0, (datetime.now(timezone.utc) - as_of).total_seconds())
-        if staleness > self.max_age_seconds:
-            log.info(
-                "trade idea cache stale path=%s staleness=%.1fs max=%.1fs",
-                self.path,
-                staleness,
-                self.max_age_seconds,
-            )
-            return None
+        # "Degrade but ship": a stale snapshot is STILL returned with its
+        # measured staleness so the route can flag it (warning) — never
+        # rejected (which, with no regenerate path, would falsely 503 a merely
+        # stale snapshot). Only a missing/unparsable file yields None above.
 
         try:
             response = _response_from_report_dict(report)
@@ -130,150 +143,57 @@ class TmpfsTradeIdeasCache:
         return response, staleness
 
 
-# ── Service ───────────────────────────────────────────────────────────
-
-
-_LRU_MISS = object()
-
-
-class _TtlLru:
-    """Tiny TTL'd LRU keyed by an arbitrary hashable tuple.
-
-    Used to debounce concurrent BFF requests that all miss the tmpfs
-    cache — without this, every request would bootstrap the live
-    pipeline. Keep it small (max 8 entries) since the keyspace is
-    derived from filter arguments.
-    """
-
-    def __init__(self, *, ttl_seconds: float, maxsize: int = 8) -> None:
-        self._ttl = float(ttl_seconds)
-        self._maxsize = int(maxsize)
-        self._lock = threading.Lock()
-        self._store: dict[Any, tuple[float, Any]] = {}
-
-    def get(self, key: Any) -> Any:
-        with self._lock:
-            entry = self._store.get(key)
-            if entry is None:
-                return _LRU_MISS
-            stored_at, value = entry
-            if (time.monotonic() - stored_at) > self._ttl:
-                self._store.pop(key, None)
-                return _LRU_MISS
-            # Refresh recency for LRU eviction.
-            self._store.pop(key, None)
-            self._store[key] = entry
-            return value
-
-    def put(self, key: Any, value: Any) -> None:
-        with self._lock:
-            self._store.pop(key, None)
-            self._store[key] = (time.monotonic(), value)
-            while len(self._store) > self._maxsize:
-                # ``dict`` preserves insertion order, so the first key
-                # is the LRU candidate.
-                oldest = next(iter(self._store))
-                self._store.pop(oldest, None)
-
-    def clear(self) -> None:
-        with self._lock:
-            self._store.clear()
+# ── Service ──────────────────────────────────────────
 
 
 class TradeIdeasService:
+    """Read-only reader of the engine's tmpfs trade-idea snapshot.
+
+    The BFF request path calls :meth:`read_snapshot`, which reads the
+    published snapshot and NEVER regenerates it: a missing / stale /
+    unparsable snapshot degrades to ``(None, None)`` so the BFF can never
+    run the engine pipeline inside a web worker (the read-only invariant,
+    docs/aperture_backend_design.md §5). Regenerating the snapshot is the
+    engine publisher's job (``src.execution.trade_idea_publisher``), never
+    the read layer's.
+    """
+
     def __init__(
         self,
         *,
-        config_path: str | None = None,
         tmpfs_path: str | Path | None = None,
         tmpfs_max_age_seconds: float = 90.0,
-        regenerate_ttl_seconds: float = 30.0,
     ) -> None:
-        self.config_path = config_path
         self._cache = TmpfsTradeIdeasCache(
             path=tmpfs_path,
             max_age_seconds=tmpfs_max_age_seconds,
         )
-        self._regenerate_lru = _TtlLru(ttl_seconds=regenerate_ttl_seconds)
-        # The route layer can inspect this after each call to surface
-        # staleness in the response envelope; ``None`` means the
-        # response came from the sync regenerate fallback.
-        self._last_staleness_seconds: float | None = None
 
-    def list_ideas(
-        self,
-        *,
-        symbols: list[str] | None = None,
-        bar_limit: int = 500,
-        min_abs_weight: float = 0.0025,
-        allow_confidence_fallback: bool = False,
-    ) -> TradeIdeasResponse:
-        normalised_symbols: tuple[str, ...] | None
-        if symbols:
-            normalised_symbols = tuple(
-                s for s in (str(x).strip().upper() for x in symbols) if s
-            ) or None
-        else:
-            normalised_symbols = None
+    def read_snapshot(
+        self, *, symbols: list[str] | None = None
+    ) -> tuple[TradeIdeasResponse | None, float | None]:
+        """Read the published snapshot WITHOUT regenerating (read-only path).
 
-        # Step 1: try the tmpfs snapshot. The publisher always writes
-        # the *full* symbol universe, so we filter at the service layer
-        # rather than re-running the pipeline for a sub-symbol request.
+        Returns ``(response, staleness_seconds)`` when a fresh snapshot is
+        present, or ``(None, None)`` when there is no readable/fresh snapshot
+        (callers degrade). Staleness is measured against the snapshot's
+        embedded ``as_of`` (not file mtime). Never raises on a missing file;
+        never runs the engine pipeline. The staleness rides back as a return
+        value (not a mutable attribute) so concurrent requests on the shared
+        singleton cannot clobber each other's reading.
+        """
+
         cached = self._cache.read()
-        if cached is not None:
-            response, staleness = cached
-            filtered = _filter_response_by_symbols(response, normalised_symbols)
-            self._last_staleness_seconds = staleness
-            return filtered
-
-        # Step 2: sync regenerate, debounced by the LRU.
-        self._last_staleness_seconds = None
-        cache_key = (
-            normalised_symbols or (),
-            int(bar_limit),
-            float(min_abs_weight),
-            bool(allow_confidence_fallback),
-        )
-        cached_response = self._regenerate_lru.get(cache_key)
-        if cached_response is not _LRU_MISS:
-            return cached_response
-
-        response = self._sync_regenerate(
-            symbols=list(normalised_symbols) if normalised_symbols else None,
-            bar_limit=bar_limit,
-            min_abs_weight=min_abs_weight,
-            allow_confidence_fallback=allow_confidence_fallback,
-        )
-        self._regenerate_lru.put(cache_key, response)
-        return response
-
-    # ── internals ─────────────────────────────────────────────────────
-
-    def _sync_regenerate(
-        self,
-        *,
-        symbols: list[str] | None,
-        bar_limit: int,
-        min_abs_weight: float,
-        allow_confidence_fallback: bool,
-    ) -> TradeIdeasResponse:
-        # Lazy import keeps the BFF importable in environments where the
-        # full bootstrap stack is unavailable (e.g. unit tests, docs builds).
-        from src.ui.trade_ideas import generate_trade_idea_report_sync
-
-        log.info(
-            "trade idea sync regenerate symbols=%s bar_limit=%d",
-            symbols,
-            bar_limit,
-        )
-        report = generate_trade_idea_report_sync(
-            config_path=self.config_path,
-            symbols=symbols,
-            bar_limit=bar_limit,
-            min_abs_weight=min_abs_weight,
-            allow_confidence_fallback=allow_confidence_fallback,
-        )
-        return _response_from_report_dict(report.to_dict())
+        if cached is None:
+            return None, None
+        response, staleness = cached
+        if symbols:
+            normalised = (
+                tuple(s for s in (str(x).strip().upper() for x in symbols) if s)
+                or None
+            )
+            response = _filter_response_by_symbols(response, normalised)
+        return response, staleness
 
 
 # ── Adapters ──────────────────────────────────────────────────────────

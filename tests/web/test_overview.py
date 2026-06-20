@@ -66,19 +66,20 @@ def test_overview_aggregates_from_snapshot(client, tmp_path, monkeypatch):
     body = resp.json()
     data = body["data"]
 
-    assert data["action_counts"] == {
-        "BUY": 2, "SELL": 1, "WATCH": 1,
-        "MODEL_REQUIRED": 0, "NO_DATA": 0, "ERROR": 0,
+    assert data["actionCounts"] == {
+        "buy": 2, "sell": 1, "watch": 1,
+        "modelRequired": 0, "noData": 0,
     }
 
     # Top actionable = BUY/SELL only (WATCH excluded), sorted by |weight| desc.
-    symbols = [i["symbol"] for i in data["top_actionable"]]
+    symbols = [i["symbol"] for i in data["topActionable"]]
     assert symbols == ["NVDA", "TSLA", "AAPL"]
-    assert len(data["top_actionable"]) <= 5
+    assert len(data["topActionable"]) <= 5
 
-    # Stage latency is summed across every idea.
-    assert round(data["stage_latency_seconds"]["data_fetch"], 6) == 0.05
-    assert round(data["stage_latency_seconds"]["meta_inference"], 6) == 0.05
+    # Engine pulse: per-stage latency summed across every idea.
+    pulse = {s["stage"]: s["seconds"] for s in data["enginePulse"]["stages"]}
+    assert round(pulse["data_fetch"], 6) == 0.05
+    assert round(pulse["meta_inference"], 6) == 0.05
 
     # Portfolio metrics stay unavailable (no persisted portfolio).
     assert data.get("nav") is None
@@ -97,26 +98,27 @@ def test_overview_caps_top_actionable_at_five(client, tmp_path, monkeypatch):
     resp = client.get("/api/v1/overview")
     assert resp.status_code == 200
     data = resp.json()["data"]
-    assert len(data["top_actionable"]) == 5
+    assert len(data["topActionable"]) == 5
     # Highest absolute weight first.
-    assert data["top_actionable"][0]["symbol"] == "SYM0"
+    assert data["topActionable"][0]["symbol"] == "SYM0"
 
 
 def test_overview_degrades_when_ideas_unavailable(client, monkeypatch):
-    # Force the ideas source to fail (simulating a missing snapshot whose
-    # sync-regenerate fallback also fails). The route must still 200.
+    # Force the read-only snapshot read to raise (e.g. an unreadable file).
+    # The route must still 200 and degrade — patch the method the route
+    # ACTUALLY calls (read_snapshot), not the removed regenerate path.
     from src.web.services import trade_ideas_service as svc
 
     def _boom(self, **kwargs):
-        raise RuntimeError("snapshot and regenerate both unavailable")
+        raise RuntimeError("snapshot read failed")
 
-    monkeypatch.setattr(svc.TradeIdeasService, "list_ideas", _boom)
+    monkeypatch.setattr(svc.TradeIdeasService, "read_snapshot", _boom)
 
     resp = client.get("/api/v1/overview")
     assert resp.status_code == 200
     body = resp.json()
     data = body["data"]
-    assert data["action_counts"]["BUY"] == 0
-    assert data["top_actionable"] == []
-    assert data["stage_latency_seconds"] == {}
+    assert data["actionCounts"]["buy"] == 0
+    assert data["topActionable"] == []
+    assert data["enginePulse"]["stages"] == []
     assert any("aggregation unavailable" in w for w in body["warnings"])

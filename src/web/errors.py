@@ -23,6 +23,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .envelope import ApiError, envelope
 
@@ -41,9 +42,11 @@ class ErrorCode(str, Enum):
     CONFLICT = "CONFLICT"
     STALE_FACTOR_MODEL = "STALE_FACTOR_MODEL"
     STALE_MODEL = "STALE_MODEL"
+    STALE_SNAPSHOT = "STALE_SNAPSHOT"
     MODEL_UNAVAILABLE = "MODEL_UNAVAILABLE"
     BROKER_UNAVAILABLE = "BROKER_UNAVAILABLE"
     DB_UNAVAILABLE = "DB_UNAVAILABLE"
+    SNAPSHOT_UNAVAILABLE = "SNAPSHOT_UNAVAILABLE"
     TIMEOUT = "TIMEOUT"
     RATE_LIMITED = "RATE_LIMITED"
     INTERNAL = "INTERNAL"
@@ -59,9 +62,11 @@ _HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.CONFLICT: 409,
     ErrorCode.STALE_FACTOR_MODEL: 200,
     ErrorCode.STALE_MODEL: 200,
+    ErrorCode.STALE_SNAPSHOT: 200,
     ErrorCode.MODEL_UNAVAILABLE: 503,
     ErrorCode.BROKER_UNAVAILABLE: 503,
     ErrorCode.DB_UNAVAILABLE: 503,
+    ErrorCode.SNAPSHOT_UNAVAILABLE: 503,
     ErrorCode.TIMEOUT: 504,
     ErrorCode.RATE_LIMITED: 429,
     ErrorCode.INTERNAL: 500,
@@ -150,6 +155,18 @@ class DbUnavailable(ApiException):
     code = ErrorCode.DB_UNAVAILABLE
 
 
+class SnapshotUnavailable(ApiException):
+    """The tmpfs trade-ideas snapshot is missing/unreadable — HTTP 503.
+
+    Distinct from a *stale* snapshot (which ships 200 + ``STALE_SNAPSHOT``
+    via :class:`DegradedResponse`): this is "no readable snapshot at all".
+    The BFF never regenerates it — that would run the engine pipeline on
+    the request path (forbidden by the read-only invariant).
+    """
+
+    code = ErrorCode.SNAPSHOT_UNAVAILABLE
+
+
 class TimeoutError(ApiException):  # noqa: A001 — domain exception, intentional shadowing
     """Upstream timeout — surfaces as HTTP 504 per §9.3."""
 
@@ -232,6 +249,55 @@ async def _validation_handler(
     return _json_envelope_response(http_status_for(ErrorCode.VALIDATION_FAILED), body)
 
 
+# Map raw HTTP status codes back onto the stable ErrorCode taxonomy.
+_STATUS_TO_CODE: dict[int, ErrorCode] = {
+    400: ErrorCode.BAD_REQUEST,
+    401: ErrorCode.UNAUTHENTICATED,
+    403: ErrorCode.FORBIDDEN,
+    404: ErrorCode.NOT_FOUND,
+    409: ErrorCode.CONFLICT,
+    422: ErrorCode.VALIDATION_FAILED,
+    429: ErrorCode.RATE_LIMITED,
+    503: ErrorCode.DB_UNAVAILABLE,
+    504: ErrorCode.TIMEOUT,
+}
+
+
+async def _http_exception_handler(
+    request: Request, exc: StarletteHTTPException
+) -> JSONResponse:
+    """Re-envelope any raw ``HTTPException`` (defence-in-depth).
+
+    Routes should raise typed :class:`ApiException`s, but a stray
+    ``HTTPException`` (from a route, a dependency, or Starlette itself) would
+    otherwise be served by Starlette's built-in handler as a bare
+    ``{"detail": ...}`` — escaping the envelope and, for 5xx, potentially
+    leaking internal exception text. This handler folds it back into the
+    standard envelope and strips ``detail`` for 5xx so nothing internal leaks.
+    """
+
+    status = exc.status_code
+    request_id = getattr(request.state, "request_id", None)
+    code = _STATUS_TO_CODE.get(
+        status, ErrorCode.INTERNAL if status >= 500 else ErrorCode.BAD_REQUEST
+    )
+    if status >= 500:
+        # Never echo a 5xx detail — log it, return a generic enveloped error.
+        logger.warning(
+            "raw_http_exception",
+            extra={"request_id": request_id, "status": status,
+                   "route": f"{request.method} {request.url.path}"},
+        )
+        message = (
+            f"internal error (request_id={request_id})" if request_id else "internal error"
+        )
+    else:
+        # 4xx details are intentional + safe (e.g. "Not Found").
+        message = exc.detail if isinstance(exc.detail, str) and exc.detail else code.value
+    body = envelope(None, source="bff", errors=[ApiError(code=code.value, message=message)])
+    return _json_envelope_response(status, body)
+
+
 async def _generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Catch-all. NEVER includes exception text or stack trace in response."""
 
@@ -266,6 +332,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(ApiException, _api_exception_handler)
     app.add_exception_handler(RequestValidationError, _validation_handler)
     app.add_exception_handler(ValidationError, _validation_handler)
+    app.add_exception_handler(StarletteHTTPException, _http_exception_handler)
     app.add_exception_handler(Exception, _generic_exception_handler)
 
 
@@ -281,6 +348,7 @@ __all__ = [
     "ModelUnavailable",
     "NotFound",
     "RateLimited",
+    "SnapshotUnavailable",
     "TimeoutError",
     "Unauthenticated",
     "http_status_for",

@@ -86,6 +86,28 @@ def envelope(
         regime=regime,
         warnings=list(warnings or []),
         errors=list(errors or []),
-        data=data,
+        data=None,
     )
-    return env.model_dump(mode="json", exclude_none=True)
+    # Envelope metadata is ALWAYS present (no exclude_none): the clients bind
+    # ``staleness_seconds``/``source_freshness``/``request_id`` as load-bearing
+    # freshness/trust signals — dropping them when null would break the UI.
+    dumped = env.model_dump(mode="json")
+    # The honesty mechanism (absent inner field -> omitted -> null on the
+    # client) and the camelCase contract apply to the DATA payload only.
+    dumped["data"] = _dump_data(data)
+    return dumped
+
+
+def _dump_data(data: Any) -> Any:
+    """Serialise the data payload: camelCase out, omit absent inner fields.
+
+    Recurses through lists so bare-array responses (``/markets``,
+    ``/signals/families``) camelCase each element. Plain dicts/scalars pass
+    through untouched (their keys are data, not field names).
+    """
+
+    if isinstance(data, BaseModel):
+        return data.model_dump(mode="json", by_alias=True, exclude_none=True)
+    if isinstance(data, list):
+        return [_dump_data(item) for item in data]
+    return data

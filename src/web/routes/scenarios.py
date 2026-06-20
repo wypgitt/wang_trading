@@ -7,26 +7,27 @@ state.
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from ..deps import get_scenario_service
 from ..dtos import ScenarioRequest
 from ..envelope import envelope
 from ..services.scenario_service import ScenarioService
 
 router = APIRouter(prefix="/scenarios", tags=["scenarios"])
-_service = ScenarioService()
 
 
 @router.get("/library")
-def scenario_library() -> dict:
-    return envelope(_service.library(), source="scenario_service")
+def scenario_library(
+    service: ScenarioService = Depends(get_scenario_service),
+) -> dict:
+    return envelope(service.library(), source="scenario_service")
 
 
 @router.post("/run")
-def run_scenario(request: ScenarioRequest) -> dict:
-    result = _service.run(request)
-    return envelope(
-        result.model_dump(mode="json"),
-        source="scenario_service",
-        warnings=result.warnings,
-    )
+def run_scenario(
+    request: ScenarioRequest,
+    service: ScenarioService = Depends(get_scenario_service),
+) -> dict:
+    result = service.run(request)
+    return envelope(result, source="scenario_service", warnings=result.warnings)

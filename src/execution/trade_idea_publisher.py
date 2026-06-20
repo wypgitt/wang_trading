@@ -9,6 +9,7 @@ observe a partial document.
 The on-disk format is:
 
     {
+        "schema_version": <int>,
         "as_of": "<ISO-8601 UTC timestamp>",
         "report": <TradeIdeaReport.to_dict() output>
     }
@@ -37,6 +38,9 @@ from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+# On-disk snapshot schema version (engine->BFF contract). Bump on shape change.
+SNAPSHOT_SCHEMA_VERSION = 1
 
 
 # ── Path resolution ───────────────────────────────────────────────────
@@ -135,6 +139,10 @@ class TradeIdeaPublisher:
         )
 
         payload = {
+            # Bump when the on-disk snapshot shape changes. The BFF reader
+            # (TmpfsTradeIdeasCache) checks this across the engine->BFF
+            # boundary — the highest-leverage failure point (1 of 2 sources).
+            "schema_version": SNAPSHOT_SCHEMA_VERSION,
             "as_of": datetime.now(timezone.utc).isoformat(),
             "report": report.to_dict() if hasattr(report, "to_dict") else report,
         }

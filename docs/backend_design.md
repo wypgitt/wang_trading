@@ -1,6 +1,15 @@
 # Wang Trading BFF — Backend Design & Development Plan
 
-Status: design (v1)
+> **Status update (2026-06-19):** The canonical backend design of record is now
+> **[aperture_backend_design.md](aperture_backend_design.md)** — the 8-endpoint v1
+> contract anchored to the built frontend, honest per [data_readiness.md](data_readiness.md),
+> right-sized for one operator. This document's *architecture rationale* (topology,
+> DI, caching, SSE, error taxonomy) is solid and folded into the canonical doc; it
+> is kept here as the **depth catalog** for the long-form reasoning. Where the two
+> differ on the *current* surface (service count, endpoint set, what's built vs
+> roadmap), the canonical doc wins.
+
+Status: design (v1) · depth catalog
 Companion to [docs/web_app_design_v2.md](web_app_design_v2.md) (product/UX) and
 [docs/api_contracts_v2.md](api_contracts_v2.md) (request/response shapes).
 This document covers *how* the backend is built and shipped: topology,

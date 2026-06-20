@@ -98,6 +98,20 @@ def _build_app() -> FastAPI:
     def _boom():
         raise RuntimeError("totally unhandled (should be redacted)")
 
+    @app.get("/raw-5xx")
+    def _raw_5xx():
+        # A stray raw HTTPException (e.g. a stub route) must be re-enveloped
+        # and its 5xx detail (here a leaked DSN) stripped.
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=500, detail="postgres://u:pw@host/db refused")
+
+    @app.get("/raw-4xx")
+    def _raw_4xx():
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="no such widget")
+
     @app.post("/echo")
     def _echo(body: _Echo = Body(...)):
         return {"n": body.n}
@@ -193,6 +207,25 @@ def test_unhandled_exception_redacts_message(err_client) -> None:
     assert "totally unhandled" not in flat
     assert "runtimeerror" not in flat
     assert "traceback" not in flat
+
+
+def test_raw_5xx_http_exception_is_enveloped_and_redacted(err_client) -> None:
+    r = err_client.get("/raw-5xx")
+    assert r.status_code == 500
+    body = r.json()
+    assert [e["code"] for e in body["errors"]] == ["INTERNAL"]
+    assert body["data"] is None
+    assert "as_of" in body and "source" in body
+    # The 5xx detail (a DSN) must NOT leak through the envelope.
+    assert "postgres" not in repr(body).lower()
+
+
+def test_raw_4xx_http_exception_is_enveloped_keeps_detail(err_client) -> None:
+    r = err_client.get("/raw-4xx")
+    assert r.status_code == 404
+    body = r.json()
+    assert [e["code"] for e in body["errors"]] == ["NOT_FOUND"]
+    assert body["errors"][0]["message"] == "no such widget"  # 4xx detail is safe
 
 
 def test_request_validation_error_returns_422(err_client) -> None:

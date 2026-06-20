@@ -26,16 +26,32 @@ def test_envelope_basic_roundtrip() -> None:
     assert as_of.tzinfo is not None
 
 
-def test_envelope_excludes_none_fields() -> None:
+def test_envelope_metadata_always_present() -> None:
+    # aperture_backend_design §0.1(3): envelope METADATA is always present —
+    # the clients bind staleness/freshness/request_id as load-bearing trust
+    # signals, so they are null-when-unknown, never dropped.
     env = envelope({"x": 1}, source="test")
-    # None fields per §0.1 must be omitted when meaningless.
-    assert "staleness_seconds" not in env
-    assert "model_version" not in env
-    assert "regime" not in env
-    assert "source_freshness" not in env
-    # Defaulted empty list fields are present (allowed) but empty.
+    for key in ("staleness_seconds", "source_freshness", "model_version", "regime"):
+        assert key in env and env[key] is None
+    assert "request_id" in env and env["request_id"].startswith("req_")
     assert env.get("warnings", []) == []
     assert env.get("errors", []) == []
+
+
+def test_envelope_data_dto_omits_none_and_camelcases() -> None:
+    # exclude_none + camelCase apply to the DATA payload only (DTOs).
+    from src.web.dtos import ActionCounts, EnginePulse, OverviewResponse
+
+    ov = OverviewResponse(
+        action_counts=ActionCounts(buy=1),
+        top_actionable=[],
+        engine_pulse=EnginePulse(),
+        nav=None,
+    )
+    env = envelope(ov, source="test")
+    assert "nav" not in env["data"]  # absent inner field omitted (honesty)
+    assert "actionCounts" in env["data"]  # camelCase out
+    assert env["data"]["actionCounts"]["modelRequired"] == 0
 
 
 def test_envelope_includes_freshness_when_given() -> None:
@@ -76,7 +92,9 @@ def test_envelope_errors_warnings_emitted() -> None:
         errors=[err],
     )
     assert env["warnings"] == ["sentiment older than 60s"]
-    assert env["errors"] == [{"code": "STALE_MODEL", "message": "degraded"}]
+    assert len(env["errors"]) == 1
+    assert env["errors"][0]["code"] == "STALE_MODEL"
+    assert env["errors"][0]["message"] == "degraded"
 
 
 def test_apienvelope_typed_roundtrip() -> None:

@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Any
 
 from src.execution import trade_idea_publisher as publisher_mod
-from src.execution.trade_idea_publisher import TradeIdeaPublisher, default_output_path
+from src.execution.trade_idea_publisher import (
+    SNAPSHOT_SCHEMA_VERSION,
+    TradeIdeaPublisher,
+    default_output_path,
+)
 from src.ui import trade_ideas as trade_ideas_module
 
 
@@ -170,9 +174,10 @@ def test_publish_once_writes_expected_json_shape(tmp_path, monkeypatch):
         "allow_confidence_fallback": True,
     }
 
-    # File contract: {"as_of": <iso>, "report": <dict>}
+    # File contract: {"schema_version": <int>, "as_of": <iso>, "report": <dict>}
     payload = json.loads(output.read_text(encoding="utf-8"))
-    assert set(payload.keys()) == {"as_of", "report"}
+    assert set(payload.keys()) == {"schema_version", "as_of", "report"}
+    assert payload["schema_version"] == SNAPSHOT_SCHEMA_VERSION
     assert isinstance(payload["as_of"], str) and payload["as_of"]
     assert payload["report"]["idea_count"] == 2
     symbols_in_payload = [idea["symbol"] for idea in payload["report"]["ideas"]]

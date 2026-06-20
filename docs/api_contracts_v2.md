@@ -1,5 +1,13 @@
 # Wang Trading Web App — API Contracts (v2)
 
+> **Status update (2026-06-19):** **Superseded for the *current* contract** by
+> **[aperture_backend_design.md](aperture_backend_design.md) §2**, which re-anchors
+> the API to the **8 endpoints the built frontend actually calls** (this doc's ~40
+> endpoints were authored ahead of the frontend and ahead of engine persistence —
+> most describe data the engine does not produce yet). Treat the shapes here as a
+> **field-level wishlist for future waves**, not the live contract. The authoritative
+> v1 surface, envelope, casing, and readiness tiering live in the canonical doc.
+
 Companion to [docs/web_app_design_v2.md](web_app_design_v2.md) §27. Concrete request/response shapes for every new v2 endpoint, plus updated DTO examples.
 
 All examples assume base URL `/api/v1`. All timestamps are UTC ISO-8601. All probabilities are in `[0, 1]`. All bps values are signed basis points (negative = adverse to the operator).

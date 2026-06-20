@@ -44,7 +44,17 @@ from .logging import (
     setup_logging,
 )
 from .metrics import instrument, metrics_endpoint
-from .routes import overview, preflight, replay, scenarios, trade_ideas
+from .routes import (
+    markets,
+    model,
+    overview,
+    preflight,
+    replay,
+    scenarios,
+    signals,
+    symbols,
+    trade_ideas,
+)
 
 
 _REQUEST_ID_HEADER = "X-Request-Id"
@@ -202,6 +212,12 @@ if os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
 
 app.include_router(overview.router, prefix="/api/v1")
 app.include_router(trade_ideas.router, prefix="/api/v1")
+
+# Net-new v1 routes (bars hypertable + registry + signal battery)
+app.include_router(markets.router, prefix="/api/v1")
+app.include_router(symbols.router, prefix="/api/v1")
+app.include_router(signals.router, prefix="/api/v1")
+app.include_router(model.router, prefix="/api/v1")
 
 # v2 routes (new pages)
 app.include_router(scenarios.router, prefix="/api/v1")
