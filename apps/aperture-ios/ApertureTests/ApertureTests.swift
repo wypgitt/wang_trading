@@ -85,4 +85,36 @@ final class ApertureTests: XCTestCase {
         XCTAssertEqual(a.next(), b.next())
         XCTAssertEqual(MockData.symbols.count, 19)
     }
+
+    // MARK: Notification deep-link parsing
+    func testDeepLinkParsing() {
+        XCTAssertEqual(DeepLink.from(["screen": "idea", "symbol": "NVDA"]), .idea("NVDA"))
+        XCTAssertEqual(DeepLink.from(["screen": "idea"]), .ideasList)
+        XCTAssertEqual(DeepLink.from(["screen": "ideas"]), .ideasList)
+        XCTAssertEqual(DeepLink.from(["screen": "symbol", "symbol": "BTC"]), .symbol("BTC"))
+        XCTAssertEqual(DeepLink.from(["screen": "strategy", "id": "ts_momentum"]), .strategy("ts_momentum"))
+        XCTAssertEqual(DeepLink.from(["screen": "markets"]), .tab("markets"))
+        XCTAssertNil(DeepLink.from(["foo": "bar"]))
+        // Required-field contract: screen=symbol needs symbol, screen=strategy needs id.
+        XCTAssertNil(DeepLink.from(["screen": "symbol"]))
+        XCTAssertNil(DeepLink.from(["screen": "strategy"]))
+    }
+
+    func testDeepLinkFromURL() {
+        XCTAssertEqual(DeepLink.from(URL(string: "aperture://idea?symbol=NVDA")!), .idea("NVDA"))
+        XCTAssertEqual(DeepLink.from(URL(string: "aperture://ideas")!), .ideasList)
+        XCTAssertEqual(DeepLink.from(URL(string: "aperture://symbol?symbol=BTC")!), .symbol("BTC"))
+        XCTAssertNil(DeepLink.from(URL(string: "https://example.com")!))
+    }
+
+    // MARK: Live Activity content is the honest decision snapshot (never NAV)
+    func testSessionSnapshotIsHonest() {
+        let s = SessionActivityController.snapshot()
+        XCTAssertEqual(s.buy, 7)
+        XCTAssertEqual(s.sell, 3)
+        XCTAssertEqual(s.watch, 2)
+        XCTAssertEqual(s.total, 12)
+        XCTAssertEqual(s.topSymbol, "NVDA")   // top by |target weight|
+        XCTAssertEqual(s.topAction, "Buy")
+    }
 }

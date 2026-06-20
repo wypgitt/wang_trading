@@ -9,6 +9,9 @@ struct MoreView: View {
     private static let liveDestinations = 5
     private static var comingDestinations: Int { Readiness.coming.flatMap { $0.items }.count }
 
+    @EnvironmentObject private var push: PushManager
+    @EnvironmentObject private var session: SessionActivityController
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -35,11 +38,63 @@ struct MoreView: View {
                     }
                 }
 
+                // Session & Alerts (Live Activity + push)
+                section("Session & Alerts") {
+                    // Live Activity toggle
+                    HStack(spacing: 12) {
+                        Image(systemName: "bolt.badge.clock").font(.system(size: 16)).foregroundStyle(Tok.accent2).frame(width: 24)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Live session").font(.system(size: 14, weight: .medium))
+                            Text(session.areEnabled ? "Lock Screen + Dynamic Island" : "Enable Live Activities in Settings")
+                                .font(.system(size: 11.5)).foregroundStyle(Tok.text3)
+                        }
+                        Spacer()
+                        Toggle("", isOn: Binding(
+                            get: { session.isRunning },
+                            set: { $0 ? session.start() : session.stop() })
+                        ).labelsHidden().tint(Tok.accent).disabled(!session.areEnabled)
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 12)
+                    Divider().overlay(Tok.border).padding(.leading, 44)
+
+                    // Notifications authorization
+                    HStack(spacing: 12) {
+                        Image(systemName: "bell.badge").font(.system(size: 16)).foregroundStyle(Tok.accent2).frame(width: 24)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Notifications").font(.system(size: 14, weight: .medium))
+                            Text(authText).font(.system(size: 11.5)).foregroundStyle(Tok.text3)
+                        }
+                        Spacer()
+                        if push.authStatus == .notDetermined {
+                            Button("Enable") { push.requestAuthorization() }
+                                .font(.system(size: 13, weight: .semibold)).foregroundStyle(Tok.accent)
+                        } else if push.authStatus == .authorized {
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(Tok.pos)
+                        }
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 12)
+                    Divider().overlay(Tok.border).padding(.leading, 44)
+
+                    // Test alert → deep-links to NVDA's decision chain
+                    Button {
+                        push.sendTestAlert(title: "New high-conviction idea", body: "BUY NVDA · meta 0.74", screen: "idea", symbol: "NVDA")
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "paperplane.fill").font(.system(size: 15)).foregroundStyle(Tok.accent2).frame(width: 24)
+                            Text("Send a test alert").font(.system(size: 14, weight: .medium)).foregroundStyle(Tok.text1)
+                            Spacer()
+                            Text("→ NVDA idea").font(.system(size: 11.5)).foregroundStyle(Tok.text3)
+                        }
+                        .padding(.horizontal, 14).padding(.vertical, 12)
+                    }.buttonStyle(.plain)
+                }
+                .onAppear { push.refreshStatus() }
+
                 // Settings
                 section("Settings") {
                     settingRow("Mode", "Paper · read-only")
                     Divider().overlay(Tok.border).padding(.leading, 44)
-                    settingRow("Theme", "Dark")
+                    settingRow("Theme", "Follows system")
                     Divider().overlay(Tok.border).padding(.leading, 44)
                     settingRow("Density", "Comfortable")
                 }
@@ -52,6 +107,14 @@ struct MoreView: View {
         }
         .apertureBackground()
         .navigationTitle("More")
+    }
+
+    private var authText: String {
+        switch push.authStatus {
+        case .authorized, .provisional, .ephemeral: return "On — alerts deep-link into the app"
+        case .denied: return "Off — enable in iOS Settings"
+        default: return "Tap Enable to allow alerts"
+        }
     }
 
     @ViewBuilder private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {

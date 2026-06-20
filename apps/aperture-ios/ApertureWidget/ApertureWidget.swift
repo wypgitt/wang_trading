@@ -116,6 +116,7 @@ struct ApertureWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: Provider()) { entry in
             ApertureWidgetView(entry: entry)
+                .widgetURL(URL(string: "aperture://ideas"))
         }
         .configurationDisplayName("Aperture")
         .description("This cycle's actionable ideas + freshness.")
@@ -125,5 +126,8 @@ struct ApertureWidget: Widget {
 
 @main
 struct ApertureWidgetBundle: WidgetBundle {
-    var body: some Widget { ApertureWidget() }
+    var body: some Widget {
+        ApertureWidget()
+        SessionLiveActivity()
+    }
 }

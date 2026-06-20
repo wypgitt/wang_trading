@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		AP00000000000000000F02C /* ApertureWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = AP00000000000000000F021 /* ApertureWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		AP00000000000000000F033 /* ApertureSessionAttributes.swift in Sources (app) */ = {isa = PBXBuildFile; fileRef = AP00000000000000000F032 /* ApertureSessionAttributes.swift */; };
+		AP00000000000000000F034 /* ApertureSessionAttributes.swift in Sources (widget) */ = {isa = PBXBuildFile; fileRef = AP00000000000000000F032 /* ApertureSessionAttributes.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -45,6 +47,7 @@
 		AP000000000000000000F004 /* Aperture.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Aperture.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AP00000000000000000F011 /* ApertureTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ApertureTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AP00000000000000000F021 /* ApertureWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ApertureWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		AP00000000000000000F032 /* ApertureSessionAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApertureSessionAttributes.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -96,8 +99,17 @@
 				AP000000000000000000F006 /* Aperture */,
 				AP00000000000000000F012 /* ApertureTests */,
 				AP00000000000000000F022 /* ApertureWidget */,
+				AP00000000000000000F031 /* Shared */,
 				AP000000000000000000F003 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		AP00000000000000000F031 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				AP00000000000000000F032 /* ApertureSessionAttributes.swift */,
+			);
+			path = Shared;
 			sourceTree = "<group>";
 		};
 		AP000000000000000000F003 /* Products */ = {
@@ -248,6 +260,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AP00000000000000000F033 /* ApertureSessionAttributes.swift in Sources (app) */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -262,6 +275,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AP00000000000000000F034 /* ApertureSessionAttributes.swift in Sources (widget) */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -342,6 +356,8 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_FILE = "Aperture-Info.plist";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -369,6 +385,8 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_FILE = "Aperture-Info.plist";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";

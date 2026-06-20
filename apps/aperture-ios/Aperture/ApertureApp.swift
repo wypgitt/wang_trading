@@ -10,10 +10,23 @@ import SwiftUI
 
 @main
 struct ApertureApp: App {
+    // SwiftUI lifecycle + a UIApplicationDelegate for APNs token callbacks and
+    // notification taps. The delegate owns the shared Router / PushManager /
+    // session controller, injected into the environment below.
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     var body: some Scene {
         WindowGroup {
             RootTabView()
                 .tint(Tok.accent)
+                .environmentObject(appDelegate.router)
+                .environmentObject(appDelegate.push)
+                .environmentObject(appDelegate.session)
+                // Deep links from the Dynamic Island / widget / Live Activity
+                // (aperture://…) — routed through the same parser as notifications.
+                .onOpenURL { url in
+                    if let link = DeepLink.from(url) { appDelegate.router.handle(link) }
+                }
         }
     }
 }
