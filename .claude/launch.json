@@ -6,6 +6,12 @@
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["-C", "apps/prototype", "run", "dev"],
       "port": 5174
+    },
+    {
+      "name": "aperture-web",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["-C", "apps/aperture-web", "dev"],
+      "port": 4180
     }
   ]
 }

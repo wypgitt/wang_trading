@@ -1,5 +1,10 @@
 # Wang Trading Web App Design — v2
 
+> **Status update (2026-06-13):** Aperture converged to **one** product. This cockpit spec is now
+> the **depth catalog** for [aperture_v1_design.md](aperture_v1_design.md) — its field-level detail
+> lands progressively as the engine produces the data (see [data_readiness.md](data_readiness.md)).
+> It is no longer a separate product direction.
+
 Status: design proposal
 Version: 2.0 (supersedes [docs/web_app_design.md](web_app_design.md))
 Audience: product, quant engineering, execution engineering, frontend engineering, operations

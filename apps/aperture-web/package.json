@@ -1,0 +1,40 @@
+{
+  "name": "aperture-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Aperture — production web app (Next.js) for the wang_trading quant engine. Data-honest v1.",
+  "scripts": {
+    "tokens": "node scripts/gen-tokens.mjs",
+    "tokens:check": "node scripts/gen-tokens.mjs && git diff --exit-code -- src/app/tokens.generated.css src/lib/tokens.generated.ts ../aperture-ios/Aperture/DesignSystem/ApertureTokens.generated.swift",
+    "predev": "node scripts/gen-tokens.mjs",
+    "dev": "next dev -p 4180",
+    "prebuild": "node scripts/gen-tokens.mjs",
+    "build": "next build",
+    "start": "next start -p 4180",
+    "lint": "next lint",
+    "type-check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "next": "14.2.15",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.13.3"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6",
+    "@testing-library/react": "^16",
+    "@testing-library/user-event": "^14",
+    "@types/node": "^20.16.11",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4",
+    "jsdom": "^25",
+    "typescript": "^5.6.3",
+    "vitest": "^2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

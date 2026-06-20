@@ -1,5 +1,9 @@
 # Wang Trading Web App Design
 
+> **Status update (2026-06-13):** Superseded. The canonical design is
+> [aperture_v1_design.md](aperture_v1_design.md); the operator-cockpit depth lives in
+> [web_app_design_v2.md](web_app_design_v2.md) as a depth catalog.
+
 Status: design proposal
 Audience: product, quant engineering, execution engineering, frontend engineering, operations
 Scope: real web application for read-only and controlled operator workflows

@@ -226,12 +226,17 @@ class MetaLabeler:
         self,
         X: pd.DataFrame,
         *,
+        return_raw: bool = False,
         db_manager: object | None = None,
         symbol: str | None = None,
         signal_family: str = "",
         model_version: str = "",
-    ) -> np.ndarray:
+    ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
         """Return P(class=1) per row, calibrated when a calibrator is fitted.
+
+        When ``return_raw`` is true, return ``(raw_p1, calibrated_p1)`` so
+        callers can surface the pre-calibration probability alongside the
+        calibrated one; otherwise return only the calibrated array.
 
         When ``db_manager`` and ``symbol`` are supplied, every returned
         probability is persisted to the ``meta_labels`` hypertable.
@@ -253,6 +258,8 @@ class MetaLabeler:
             self._persist_meta_labels(
                 X, raw_p1, p1, db_manager, symbol, signal_family, model_version,
             )
+        if return_raw:
+            return raw_p1, p1
         return p1
 
     @staticmethod

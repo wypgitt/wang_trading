@@ -52,6 +52,73 @@ def _pipeline(*, retrain_pipeline=None) -> PaperTradingPipeline:
     )
 
 
+# ── Fakes for the sizing path (drift-haircut application) ───────────────
+
+class _FakeSignalBattery:
+    def generate(self, frame, symbol=None):
+        return pd.DataFrame({"symbol": ["AAPL"], "family": ["trend"], "side": [1]})
+
+
+class _FakeMeta:
+    def predict(self, features, signals):
+        return pd.DataFrame({
+            "symbol": ["AAPL"], "family": ["trend"], "side": [1],
+            "meta_prob": [0.8],
+        })
+
+
+class _FakeBetSizing:
+    """Returns a constant bet of final_size=RAW_SIZE on every compute call."""
+
+    RAW_SIZE = 0.10
+
+    def compute(self, meta, features):
+        return pd.DataFrame({
+            "symbol": ["AAPL"], "family": ["trend"], "side": [1],
+            "final_size": [self.RAW_SIZE],
+        })
+
+
+class _RecordingOptimizer:
+    """Captures the bet_sizes that actually reach the portfolio optimizer."""
+
+    def __init__(self) -> None:
+        self.seen_bet_sizes: list = []
+
+    def compute_target_portfolio(self, **kwargs):
+        bets = kwargs.get("bet_sizes")
+        self.seen_bet_sizes.append(None if bets is None else bets.copy())
+        return None  # no target → order_manager runs with target=None
+
+
+def _sizing_pipeline(optimizer) -> PaperTradingPipeline:
+    """Like `_pipeline` but wired with real fakes through the sizing path."""
+    portfolio = PortfolioState(cash=100_000.0)
+    broker = PaperBrokerAdapter(initial_cash=100_000.0, slippage_bps=0.0,
+                                 fill_delay_ms=0, price_feed=lambda s: 100.0)
+    cbs = CircuitBreakerManager(
+        max_order_pct=0.50, max_positions=50, max_single_position_pct=0.50,
+        max_gross_exposure=3.0,
+    )
+    cost = TransactionCostModel(equities_config=EQ_COST)
+    om = OrderManager(broker, cbs, cost, portfolio)
+    metrics = MetricsCollector(registry=CollectorRegistry())
+    alerts = AlertManager(channel_map={s: [LogChannel()] for s in AlertSeverity})
+    drift = FeatureDriftDetector()
+    return PaperTradingPipeline(
+        data_adapter=None, bar_constructors={},
+        feature_assembler=None,
+        signal_battery=_FakeSignalBattery(),
+        meta_pipeline=_FakeMeta(), meta_labeler=None,
+        bet_sizing=_FakeBetSizing(), portfolio_optimizer=optimizer,
+        order_manager=om, metrics=metrics, alert_manager=alerts,
+        drift_detector=drift,
+        config=PipelineConfig(max_cycles=10, sleep_seconds=0.0,
+                              drift_check_every=1),
+        retrain_pipeline=None,
+    )
+
+
 # ── Severity branches ──────────────────────────────────────────────────
 
 class TestDriftHandling:
@@ -195,3 +262,85 @@ class TestConstructor:
         pipeline._drift_size_haircut_until = datetime.now(timezone.utc) - timedelta(seconds=1)
         assert pipeline.drift_size_multiplier == 1.0
         assert pipeline._drift_size_haircut_until is None
+
+
+# ── Haircut actually reaches order sizing (the live gap) ───────────────
+
+class TestDriftHaircutApplied:
+    """The protective haircut must change real order sizing, not just a
+    property read by tests. Drive two cycles: a severe-drift cycle opens the
+    24h window, and the *next* cycle's bet sizes must be scaled by 0.5."""
+
+    def test_next_cycle_bet_sizes_halved_after_severe_drift(self):
+        async def _go():
+            optimizer = _RecordingOptimizer()
+            pipeline = _sizing_pipeline(optimizer)
+            features = pd.DataFrame(
+                {"a": [1.0, 1.1], "b": [2.0, 2.1],
+                 "c": [3.0, 3.1], "d": [4.0, 4.1]}
+            )
+            # Force every drift check to report 100% severe drift.
+            pipeline.drift_detector.get_drifted_features = MagicMock(
+                return_value=["a", "b", "c", "d"]
+            )
+            prices = {"AAPL": 100.0}
+            # Cycle 1: sizing runs *before* drift handling, so it is NOT
+            # haircut; the severe-drift handler then opens the 24h window.
+            await pipeline.run_cycle(prices=prices, features=features)
+            # Cycle 2: the haircut window is now active.
+            await pipeline.run_cycle(prices=prices, features=features)
+            await asyncio.sleep(0)
+            return optimizer, pipeline
+
+        optimizer, pipeline = asyncio.run(_go())
+
+        assert pipeline.drift_size_multiplier == 0.5  # window still active
+        assert len(optimizer.seen_bet_sizes) == 2
+        raw = _FakeBetSizing.RAW_SIZE
+        # Cycle 1 sized at full size (haircut not yet active during sizing).
+        assert optimizer.seen_bet_sizes[0]["final_size"].iloc[0] == pytest.approx(raw)
+        # Cycle 2 sized at the 50% haircut — the gap this change closes.
+        assert optimizer.seen_bet_sizes[1]["final_size"].iloc[0] == pytest.approx(raw * 0.5)
+
+
+class TestApplyDriftHaircut:
+    """Unit coverage for the `_apply_drift_haircut` helper branches."""
+
+    def _active(self) -> PaperTradingPipeline:
+        pipeline = _pipeline()
+        pipeline._drift_size_haircut_until = (
+            datetime.now(timezone.utc) + timedelta(hours=1)
+        )
+        return pipeline
+
+    def test_scales_final_size_when_active(self):
+        pipeline = self._active()
+        bets = pd.DataFrame({"symbol": ["AAPL"], "final_size": [0.2]})
+        out = pipeline._apply_drift_haircut(bets)
+        assert out["final_size"].iloc[0] == pytest.approx(0.1)
+        # Input frame is not mutated (copy-on-write).
+        assert bets["final_size"].iloc[0] == pytest.approx(0.2)
+
+    def test_noop_when_window_inactive(self):
+        pipeline = _pipeline()  # no haircut window
+        bets = pd.DataFrame({"symbol": ["AAPL"], "final_size": [0.2]})
+        out = pipeline._apply_drift_haircut(bets)
+        assert out["final_size"].iloc[0] == pytest.approx(0.2)
+
+    def test_falls_back_to_size_column(self):
+        pipeline = self._active()
+        bets = pd.DataFrame({"symbol": ["AAPL"], "size": [0.4]})
+        out = pipeline._apply_drift_haircut(bets)
+        assert out["size"].iloc[0] == pytest.approx(0.2)
+
+    def test_handles_none_and_empty(self):
+        pipeline = self._active()
+        assert pipeline._apply_drift_haircut(None) is None
+        out = pipeline._apply_drift_haircut(pd.DataFrame())
+        assert out.empty
+
+    def test_no_weight_column_is_left_unchanged(self):
+        pipeline = self._active()
+        bets = pd.DataFrame({"symbol": ["AAPL"], "afml_size": [0.2]})
+        out = pipeline._apply_drift_haircut(bets)
+        assert out["afml_size"].iloc[0] == pytest.approx(0.2)

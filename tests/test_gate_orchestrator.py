@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from src.backtesting.gate_orchestrator import StrategyGate, _cli
+from src.backtesting.transaction_costs import EQUITIES_COSTS, TransactionCostModel
 from src.backtesting.walk_forward import BacktestResult
 
 
@@ -120,6 +121,79 @@ class TestRecommendationText:
         assert "ITERATE" in text
         assert "DSR" in text
         assert "PBO" not in text.split("ITERATE:")[1]
+
+
+class TestEvaluateCandidate:
+    """The retrain-pipeline gate path: real CPCV / DSR / PBO verdicts on a
+    candidate strategy — never the historical ``gate_unavailable`` stub.
+
+    Uses a tz-aware (UTC) bar index to mirror the real ``bars`` hypertable;
+    the wide-signal helpers normalise to UTC, so a naive index would silently
+    produce an all-zero signal panel.
+    """
+
+    @staticmethod
+    def _panel(drift: float, vol: float, n: int = 500, seed: int = 0):
+        idx = pd.date_range("2021-01-01", periods=n, freq="B", tz="UTC")
+        rng = np.random.default_rng(seed)
+        price = 100.0 * np.exp(np.cumsum(rng.normal(drift, vol, n)))
+        close = pd.DataFrame({"AAA": price}, index=idx)
+        signals = pd.DataFrame(1, index=idx, columns=["AAA"])  # always long
+        bets = pd.DataFrame(0.5, index=idx, columns=["AAA"])
+        features = pd.DataFrame(
+            {"f1": price, "f2": np.r_[0.0, np.diff(price)]}, index=idx
+        )
+        return close, signals, bets, features
+
+    def test_strong_trend_passes_all_three_gates(self):
+        cm = TransactionCostModel(equities_config=EQUITIES_COSTS)
+        close, signals, bets, features = self._panel(drift=0.004, vol=0.004)
+        res = StrategyGate().evaluate_candidate(
+            close=close, signals=signals, bet_sizes=bets, features=features,
+            cost_model=cm, cpcv_horizon=25,
+        )
+        assert res["passed"] is True
+        # All three gates produced a *real* boolean verdict.
+        assert res["gate_1_cpcv"]["passed"] is True
+        assert res["gate_2_dsr"]["passed"] is True
+        assert res["gate_3_pbo"]["passed"] is True
+        # ...backed by real numbers, not a placeholder.
+        assert res["gate_1_cpcv"]["total_paths"] == 45
+        assert res["gate_1_cpcv"]["pct"] >= 0.60
+        assert 0.0 <= res["gate_2_dsr"]["p_value"] < 0.05
+        assert 0.0 <= res["gate_3_pbo"]["pbo_value"] < 0.40
+        assert "PROCEED" in res["recommendation"]
+        assert "gate_unavailable" not in str(res)
+
+    def test_no_drift_noise_fails_with_real_verdict(self):
+        cm = TransactionCostModel(equities_config=EQUITIES_COSTS)
+        close, signals, bets, features = self._panel(drift=0.0, vol=0.01, seed=3)
+        res = StrategyGate().evaluate_candidate(
+            close=close, signals=signals, bet_sizes=bets, features=features,
+            cost_model=cm, cpcv_horizon=25,
+        )
+        assert res["passed"] is False
+        # DSR is a genuine *False* (a computed p-value ≥ 0.05), not None/stub.
+        assert res["gate_2_dsr"]["passed"] is False
+        assert res["gate_2_dsr"]["p_value"] >= 0.05
+        assert "ITERATE" in res["recommendation"]
+        assert "gate_unavailable" not in str(res)
+
+    def test_too_few_bars_degrades_cpcv_to_not_run_not_a_fake_pass(self):
+        """With too few bars to form CPCV paths, gate 1 reports "not run"
+        (passed=None) and DSR falls back to the single backtest — never a
+        fabricated positive-paths verdict."""
+        cm = TransactionCostModel(equities_config=EQUITIES_COSTS)
+        close, signals, bets, features = self._panel(drift=0.004, vol=0.004, n=12)
+        res = StrategyGate().evaluate_candidate(
+            close=close, signals=signals, bet_sizes=bets, features=features,
+            cost_model=cm, cpcv_horizon=2, n_cpcv_groups=10,
+        )
+        assert res["gate_1_cpcv"]["passed"] is None  # not run, not False
+        assert res["gate_1_cpcv"]["total_paths"] == 0
+        # DSR still computes a real verdict from the single backtest.
+        assert res["gate_2_dsr"]["passed"] in (True, False)
+        assert "gate_unavailable" not in str(res)
 
 
 class TestCLI:

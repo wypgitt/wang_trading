@@ -1,5 +1,9 @@
 # Aperture — App Design (Web + iOS)
 
+> **Status update (2026-06-13):** This document's vision is **folded into the canonical
+> [aperture_v1_design.md](aperture_v1_design.md)**, now the single design of record (one product,
+> web + iOS, data-honest v1). Kept here for the original consumer-product framing.
+
 **A consumer-grade interface for the `wang_trading` quant engine.**
 
 Version 1.0 · 2026-06-01 · Owner: YW

@@ -21,6 +21,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Callable
 
+import numpy as np
 import pandas as pd
 from loguru import logger
 
@@ -32,7 +33,11 @@ from src.backtesting.deflated_sharpe import (
 from src.backtesting.pbo import compute_pbo, validate_pbo
 from src.backtesting.report import BacktestReport
 from src.backtesting.transaction_costs import TransactionCostModel
-from src.backtesting.walk_forward import BacktestResult, WalkForwardBacktester
+from src.backtesting.walk_forward import (
+    BacktestResult,
+    WalkForwardBacktester,
+    compute_metrics,
+)
 
 
 @dataclass
@@ -184,6 +189,253 @@ class StrategyGate:
                 gate_2["passed"], gate_1, gate_2, gate_3
             ),
         }
+
+    # ── retrain-pipeline path (real CPCV / DSR / PBO on a candidate) ───
+
+    # pylint: disable=too-many-arguments,too-many-locals
+    def evaluate_candidate(
+        self,
+        *,
+        close: pd.DataFrame,
+        signals: pd.DataFrame,
+        cost_model: TransactionCostModel,
+        features: pd.DataFrame | None = None,
+        bet_sizes: pd.DataFrame | pd.Series | None = None,
+        meta_probs: pd.DataFrame | pd.Series | None = None,
+        pbo_matrix: pd.DataFrame | None = None,
+        labels_df: pd.DataFrame | None = None,
+        cpcv_horizon: int = 10,
+        n_cpcv_groups: int = 10,
+        n_test_groups: int = 2,
+        embargo_pct: float = 0.01,
+        n_trials: int = 1,
+        max_pbo: float = 0.40,
+        min_dsr_pvalue: float = 0.05,
+        min_positive_paths_pct: float = 0.60,
+    ) -> dict:
+        """Run the §9 CPCV / DSR / PBO gate stack against a *retrained
+        candidate* using the data the retrain pipeline actually has.
+
+        Unlike :meth:`validate` — whose CPCV path refits ``type(meta_labeler)``
+        on per-bar feature slices and only fits a simple per-bar feature model —
+        this path validates the **candidate's realised strategy**: it backtests
+        the candidate's signals once, then measures CPCV path dispersion, DSR
+        significance, and PBO directly from the realised return stream. That
+        makes it compatible with the engineered meta-labeler the retrain
+        pipeline promotes, where the per-bar refit is not.
+
+        Gate verdicts:
+          * gate 1 (CPCV)  — ≥ ``min_positive_paths_pct`` of purged
+            combinatorial out-of-sample paths show positive net return.
+          * gate 2 (DSR)   — deflated-Sharpe ``p < min_dsr_pvalue`` (CPCV
+            path dispersion when available, else the single backtest).
+          * gate 3 (PBO)   — ``compute_pbo(pbo_matrix) < max_pbo``. The
+            (time × variants) matrix is taken from ``pbo_matrix`` if supplied,
+            else swept from ``features`` over a small barrier/holding grid;
+            needs ≥ 2 usable variant columns or the gate reports "not run".
+
+        A gate that *cannot be evaluated* (no CPCV paths buildable, or no
+        ``pbo_matrix`` supplied) reports ``passed=None`` ("not run") rather than
+        ``False`` — distinct from a real failing verdict. ``passed`` overall is
+        ``True`` only when all three gates pass, per design-doc §9.
+        """
+        bt = self._build_backtester(cost_model)
+        primary = bt.run(
+            close=close,
+            signals_df=signals,
+            meta_probs=meta_probs,
+            bet_sizes=bet_sizes,
+        )
+
+        # Build the PBO (time × variants) return matrix from a small
+        # barrier/holding sweep when the caller didn't supply one.
+        if pbo_matrix is None and features is not None:
+            pbo_matrix = self._build_pbo_matrix(bt, close, features, signals)
+
+        # The DSR trial count reflects how many strategy configurations were
+        # searched: default to the width of the PBO variant grid when the
+        # caller left it at 1, so the deflation haircut isn't understated.
+        if n_trials <= 1 and pbo_matrix is not None and not pbo_matrix.empty:
+            n_trials = int(pbo_matrix.shape[1])
+
+        # (a) CPCV — positive-paths over purged combinatorial OOS blocks
+        cpcv_results = self._cpcv_path_results(
+            primary.returns,
+            n_groups=n_cpcv_groups,
+            n_test_groups=n_test_groups,
+            embargo_pct=embargo_pct,
+            cpcv_horizon=cpcv_horizon,
+            labels_df=labels_df,
+        )
+        if cpcv_results:
+            g1_pass, g1_stats = validate_strategy(
+                cpcv_results, min_positive_paths_pct=min_positive_paths_pct
+            )
+            gate_1 = {
+                "passed": g1_pass,
+                "positive_paths": g1_stats["positive_count"],
+                "total_paths": g1_stats["path_count"],
+                "pct": g1_stats["positive_pct"],
+            }
+        else:
+            gate_1 = {
+                "passed": None,
+                "positive_paths": 0,
+                "total_paths": 0,
+                "pct": 0.0,
+            }
+
+        # (b) DSR — CPCV dispersion when we have it, else the single run
+        if cpcv_results:
+            dsr = compute_dsr_from_cpcv(cpcv_results, n_total_trials=n_trials)
+        else:
+            dsr = compute_dsr_from_backtest(primary, n_trials=n_trials)
+        gate_2 = {
+            "passed": bool(dsr["p_value"] < min_dsr_pvalue),
+            "statistic": dsr["dsr_statistic"],
+            "p_value": dsr["p_value"],
+        }
+
+        # (c) PBO over the supplied (time × variants) return matrix
+        pbo_value: float | None = None
+        if (
+            pbo_matrix is not None
+            and not pbo_matrix.empty
+            and pbo_matrix.shape[1] >= 2
+        ):
+            pbo_value, _ = compute_pbo(pbo_matrix)
+            passed_pbo, _ = validate_pbo(pbo_value, max_pbo=max_pbo)
+            gate_3 = {"passed": passed_pbo, "pbo_value": pbo_value}
+        else:
+            gate_3 = {"passed": None, "pbo_value": float("nan")}
+
+        report = BacktestReport(
+            result=primary,
+            cpcv_results=cpcv_results,
+            dsr_result=dsr,
+            pbo_result=(
+                {"pbo": pbo_value, "max_pbo": max_pbo}
+                if pbo_value is not None
+                else None
+            ),
+        )
+
+        # All three must *pass* (None / not-run is conservatively not a pass).
+        all_passed = (
+            gate_1["passed"] is True
+            and gate_2["passed"] is True
+            and gate_3["passed"] is True
+        )
+        return {
+            "passed": all_passed,
+            "gate_1_cpcv": gate_1,
+            "gate_2_dsr": gate_2,
+            "gate_3_pbo": gate_3,
+            "backtest_result": primary,
+            "report": report,
+            "recommendation": self._recommend(all_passed, gate_1, gate_2, gate_3),
+        }
+
+    @staticmethod
+    def _bar_labels_df(index: pd.Index, horizon: int) -> pd.DataFrame:
+        """Per-bar label spans (``event_start``/``event_end``) for CPCV purging.
+
+        Each bar's label closes ``horizon`` bars later (positional, so it works
+        for any index spacing), clipped to the final bar. This is what
+        :meth:`CPCVEngine.generate_paths` purges/embargoes against.
+        """
+        idx = pd.Index(index)
+        horizon = max(int(horizon), 1)
+        values = idx.to_numpy()
+        positions = np.arange(len(idx))
+        end_positions = np.minimum(positions + horizon, len(idx) - 1)
+        return pd.DataFrame(
+            {"event_start": values, "event_end": values[end_positions]},
+            index=idx,
+        )
+
+    @staticmethod
+    def _cpcv_path_results(
+        returns: pd.Series,
+        *,
+        n_groups: int,
+        n_test_groups: int,
+        embargo_pct: float,
+        cpcv_horizon: int,
+        labels_df: pd.DataFrame | None = None,
+    ) -> list[BacktestResult]:
+        """Slice the candidate's realised returns into purged combinatorial
+        OOS paths and wrap each as a :class:`BacktestResult`.
+
+        Returns ``[]`` when there are too few bars to partition (CPCV then
+        degrades to single-backtest DSR rather than a fabricated verdict).
+        """
+        returns = returns.dropna()
+        n = len(returns)
+        if n < n_groups * 2:  # need ≥ 2 bars per group to form real paths
+            return []
+
+        if labels_df is None:
+            labels_df = StrategyGate._bar_labels_df(returns.index, cpcv_horizon)
+        elif len(labels_df) != n:
+            raise ValueError(
+                "labels_df must align 1:1 with backtest returns "
+                f"({len(labels_df)} vs {n})"
+            )
+
+        idx_frame = pd.DataFrame(index=np.arange(n))
+        engine = CPCVEngine(
+            n_groups=n_groups,
+            n_test_groups=n_test_groups,
+            embargo_pct=embargo_pct,
+        )
+        paths = engine.generate_paths(idx_frame, None, labels_df)
+
+        results: list[BacktestResult] = []
+        for path in paths:
+            _, test_idx = path[0]
+            if len(test_idx) < 2:
+                continue
+            seg = returns.iloc[test_idx]
+            equity = (1.0 + seg).cumprod()
+            drawdown = equity / equity.cummax() - 1.0
+            results.append(
+                BacktestResult(
+                    trades=[],
+                    equity_curve=equity,
+                    returns=seg,
+                    drawdown_curve=drawdown,
+                    metrics=compute_metrics(equity, []),
+                )
+            )
+        return results
+
+    @staticmethod
+    def _build_pbo_matrix(
+        backtester: WalkForwardBacktester,
+        close: pd.DataFrame,
+        features: pd.DataFrame,
+        signals: pd.DataFrame,
+    ) -> pd.DataFrame | None:
+        """A (time × variants) return matrix for the PBO gate, swept over a
+        small barrier/holding grid. Returns ``None`` when fewer than 2 usable
+        variants can be built (PBO then reports "not run" instead of a
+        fabricated pass)."""
+        from src.backtesting.pbo import generate_strategy_variants
+
+        grid = {
+            "upper_barrier_mult": [1.5, 2.0, 2.5],
+            "lower_barrier_mult": [1.5, 2.0, 2.5],
+            "max_holding_period": [25, 50],
+        }
+        matrix = generate_strategy_variants(
+            backtester, close, features, signals, grid, n_variants=9,
+        )
+        if matrix is None or matrix.shape[1] < 2:
+            return None
+        # Drop all-NaN columns (degenerate variants) before PBO ranking.
+        matrix = matrix.dropna(axis=1, how="all").fillna(0.0)
+        return matrix if matrix.shape[1] >= 2 else None
 
     # ── recommendation text ───────────────────────────────────────────
 
