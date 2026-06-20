@@ -1,0 +1,10 @@
+/node_modules
+/.next
+/out
+/build
+next-env.d.ts
+*.tsbuildinfo
+.DS_Store
+.env*.local
+# tokens.generated.{css,ts} ARE committed (generator is idempotent; CI verifies they
+# match tokens.json — see scripts/gen-tokens.mjs).

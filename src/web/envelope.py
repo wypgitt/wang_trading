@@ -10,10 +10,16 @@ Routes use the :func:`envelope` helper or build the model directly.
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, Field
+
+
+def _new_request_id() -> str:
+    """Short per-response id so the UI's Error state can render a copyable ref."""
+    return "req_" + uuid.uuid4().hex[:16]
 
 T = TypeVar("T")
 
@@ -50,6 +56,7 @@ class ApiEnvelope(BaseModel, Generic[T]):
     regime: RegimeSnapshot | None = None
     warnings: list[str] = Field(default_factory=list)
     errors: list[ApiError] = Field(default_factory=list)
+    request_id: str = Field(default_factory=_new_request_id)
     data: T | None = None
 
 

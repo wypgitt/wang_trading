@@ -1,0 +1,63 @@
+name: Aperture Frontend
+
+on:
+  pull_request:
+    paths:
+      - 'apps/aperture-web/**'
+      - 'apps/aperture-ios/**'
+      - '.github/workflows/aperture-frontend.yml'
+  push:
+    branches: [main, master]
+    paths:
+      - 'apps/aperture-web/**'
+      - 'apps/aperture-ios/**'
+
+jobs:
+  web:
+    name: Web — tokens · types · tests · build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/aperture-web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: apps/aperture-web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      # The generated token files (web CSS vars, chart hex, iOS Swift) must match
+      # tokens.json — a single source of truth. Fail the build if they drifted.
+      - name: Verify design tokens are in sync
+        run: pnpm tokens:check
+      - name: Type-check
+        run: pnpm type-check
+      - name: Unit tests (honesty invariants)
+        run: pnpm test
+      - name: Production build
+        run: pnpm build
+
+  ios:
+    name: iOS — build + unit tests
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show Xcode
+        run: xcodebuild -version
+      - name: Build + test (iOS Simulator)
+        working-directory: apps/aperture-ios
+        run: |
+          xcodebuild test \
+            -project Aperture.xcodeproj \
+            -scheme Aperture \
+            -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
+            CODE_SIGNING_ALLOWED=NO | xcpretty || \
+          xcodebuild test \
+            -project Aperture.xcodeproj \
+            -scheme Aperture \
+            -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
+            CODE_SIGNING_ALLOWED=NO

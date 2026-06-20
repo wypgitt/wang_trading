@@ -302,13 +302,25 @@ class ModelMetaPipeline:
                 continue
             X = self._live_frame(feature_row, signal, timestamp)
             try:
-                prob = float(self.model.predict_proba(X)[0])
+                # Prefer the (raw, calibrated) split when the model exposes
+                # it (MetaLabeler.predict_proba(return_raw=True)); fall back
+                # to a single calibrated value for plain/pyfunc models.
+                try:
+                    proba = self.model.predict_proba(X, return_raw=True)
+                except TypeError:
+                    proba = self.model.predict_proba(X)
+                if isinstance(proba, tuple) and len(proba) == 2:
+                    meta_prob = float(proba[0][0])
+                    cal_prob = float(proba[1][0])
+                else:
+                    cal_prob = float(proba[0])
+                    meta_prob = cal_prob
             except Exception as exc:  # noqa: BLE001
                 log.warning("meta-label prediction failed: %s", exc)
                 continue
             row = signal.to_dict()
-            row["meta_prob"] = prob
-            row["calibrated_prob"] = prob
+            row["meta_prob"] = meta_prob
+            row["calibrated_prob"] = cal_prob
             rows.append(row)
         return pd.DataFrame(rows)
 

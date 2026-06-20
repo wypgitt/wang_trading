@@ -197,6 +197,7 @@ class PaperTradingPipeline:
             if self.bet_sizing is not None and meta is not None:
                 start = time.perf_counter()
                 bet_sizes = self.bet_sizing.compute(meta, features)
+                bet_sizes = self._apply_drift_haircut(bet_sizes)
                 self._record_stage_latency("sizing", time.perf_counter() - start)
                 self._record_stage_items("sizing", "bets", _row_count(bet_sizes))
 
@@ -402,6 +403,43 @@ class PaperTradingPipeline:
             self._drift_size_haircut_until = None
             return 1.0
         return 0.5
+
+    def _apply_drift_haircut(
+        self, bet_sizes: pd.DataFrame | None,
+    ) -> pd.DataFrame | None:
+        """Scale computed bet sizes by the active drift haircut multiplier.
+
+        On severe feature drift, `_handle_drift` opens a 24h window during
+        which `drift_size_multiplier` returns 0.5; this applies that haircut to
+        the canonical weight column so real order sizing is actually reduced.
+        Without this step the documented "50% bet-size haircut on severe drift"
+        is dead — the multiplier is computed but never reaches order sizing.
+
+        Mirrors `_ScaledBetSizing` in live_trading and the column choice in
+        `DirectTargetOptimizer`: scale `final_size`, falling back to `size`.
+        The two multipliers (deployment ramp × drift haircut) compose — both
+        reduce size, which is the conservative direction.
+        """
+        if bet_sizes is None or not hasattr(bet_sizes, "copy"):
+            return bet_sizes
+        mult = self.drift_size_multiplier
+        if mult == 1.0 or getattr(bet_sizes, "empty", False):
+            return bet_sizes
+        weight_col = (
+            "final_size" if "final_size" in bet_sizes.columns
+            else "size" if "size" in bet_sizes.columns
+            else None
+        )
+        if weight_col is None:
+            log.warning(
+                "drift haircut active (×%.2f) but bet sizes lack a "
+                "'final_size'/'size' column; order sizing NOT reduced",
+                mult,
+            )
+            return bet_sizes
+        out = bet_sizes.copy()
+        out[weight_col] = out[weight_col].astype(float) * mult
+        return out
 
     # ── Main loop ──────────────────────────────────────────────────────
 

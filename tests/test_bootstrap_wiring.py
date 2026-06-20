@@ -29,6 +29,20 @@ class _FakeMetaModel:
         return np.array([0.73])
 
 
+class _FakeCalibratedMetaModel:
+    """Exposes a pre-calibration (raw) probability distinct from the
+    isotonic-calibrated one via the ``return_raw`` protocol."""
+
+    feature_names_ = _FakeMetaModel.feature_names_
+
+    def predict_proba(self, X, *, return_raw=False):
+        raw = np.array([0.80])
+        calibrated = np.array([0.62])
+        if return_raw:
+            return raw, calibrated
+        return calibrated
+
+
 def test_model_meta_pipeline_aligns_live_features():
     features = pd.DataFrame(
         {"f1": [1.0, 2.0]},
@@ -47,8 +61,32 @@ def test_model_meta_pipeline_aligns_live_features():
     out = ModelMetaPipeline(_FakeMetaModel()).predict(features, signals)
 
     assert len(out) == 1
+    # Plain model without return_raw support: both fields equal (fallback).
     assert out["meta_prob"].iloc[0] == 0.73
     assert out["calibrated_prob"].iloc[0] == 0.73
+
+
+def test_model_meta_pipeline_splits_raw_and_calibrated():
+    features = pd.DataFrame(
+        {"f1": [1.0, 2.0]},
+        index=pd.to_datetime(["2024-01-01T00:00:00Z", "2024-01-01T00:01:00Z"]),
+    )
+    signals = pd.DataFrame([
+        {
+            "timestamp": pd.Timestamp("2024-01-01T00:01:00Z"),
+            "symbol": "AAPL",
+            "family": "momentum",
+            "side": 1,
+            "confidence": 0.4,
+        }
+    ])
+
+    out = ModelMetaPipeline(_FakeCalibratedMetaModel()).predict(features, signals)
+
+    assert len(out) == 1
+    # meta_prob is the raw model output; calibrated_prob is post-isotonic.
+    assert out["meta_prob"].iloc[0] == 0.80
+    assert out["calibrated_prob"].iloc[0] == 0.62
 
 
 def test_direct_target_optimizer_aggregates_and_caps():

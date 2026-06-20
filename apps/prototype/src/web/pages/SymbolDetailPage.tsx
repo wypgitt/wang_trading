@@ -2,49 +2,28 @@ import { useState } from 'react';
 import { Panel } from '../../components/ui/Panel';
 import { AreaChart } from '../../components/charts/AreaChart';
 import { CandleChart } from '../../components/charts/CandleChart';
-import { MiniBars } from '../../components/charts/MiniBars';
 import { IdeaDrawer } from '../../components/IdeaDrawer';
 import { ActionPill, AssetGlyph, Delta, ProbRing, Segmented } from '../../components/ui/primitives';
+import { ComingSoon, ComingState, DataUnavailable } from '../../components/ui/honesty';
 import { Icon } from '../../components/Icon';
 import { useNav } from '../../nav';
 import { symBy, TRADE_IDEAS } from '../../data/mock';
 import { C } from '../../lib/colors';
-import { fmtBps, fmtCompact, fmtPct, fmtPctSigned, fmtPrice, sideLabel } from '../../lib/format';
+import { fmtCompact, fmtNum, fmtPctSigned, fmtPrice, sideLabel } from '../../lib/format';
 
 const TF: Record<string, number> = { '1M': 22, '3M': 66, '6M': 130 };
 
-function hash(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-  return h;
-}
-
-function symbolFeatures(symbol: string, closes: number[]) {
-  const rets: number[] = [];
-  for (let i = 1; i < closes.length; i++) rets.push(closes[i] / closes[i - 1] - 1);
-  const std = (a: number[]) => {
-    if (!a.length) return 0;
-    const m = a.reduce((x, y) => x + y, 0) / a.length;
-    return Math.sqrt(a.reduce((x, y) => x + (y - m) ** 2, 0) / a.length);
-  };
-  const rvShort = std(rets.slice(-5)) * Math.sqrt(252);
-  const rvLong = std(rets.slice(-30)) * Math.sqrt(252);
-  const last14 = rets.slice(-14);
-  const gains = last14.filter((r) => r > 0).reduce((a, b) => a + b, 0) / 14;
-  const losses = -last14.filter((r) => r < 0).reduce((a, b) => a + b, 0) / 14 || 1e-6;
-  const rsi = 100 - 100 / (1 + gains / losses);
-  const h = hash(symbol);
-  return [
-    { label: 'GARCH vol', value: fmtPct(rvLong * 1.08, 1), hint: 'conditional, annualized' },
-    { label: 'Realized vol (5)', value: fmtPct(rvShort, 1), hint: 'short window' },
-    { label: 'RSI-14', value: rsi.toFixed(0), hint: rsi > 70 ? 'overbought' : rsi < 30 ? 'oversold' : 'neutral' },
-    { label: 'Order-flow imb.', value: fmtPctSigned(((h % 22) - 11) / 100), hint: 'signed volume' },
-    { label: 'Kyle λ', value: (0.4 + (h % 50) / 100).toFixed(2) + 'e-6', hint: 'price impact' },
-    { label: 'VPIN', value: (0.18 + (h % 40) / 100).toFixed(2), hint: 'informed trading' },
-    { label: 'Amihud illiq.', value: (0.1 + (h % 30) / 100).toFixed(2), hint: 'illiquidity' },
-    { label: 'Roll spread', value: (2 + (h % 8)).toFixed(1) + ' bps', hint: 'effective spread' },
-  ];
-}
+// Honesty unlock conditions for engine outputs that are real in code but never
+// persisted / surfaced today (see docs/data_readiness.md). The UI shows these
+// instead of fabricating a number.
+const REGIME_UNLOCK =
+  'Regime fit unlocks when RegimeDetector is invoked and persisted — it has zero runtime callers today, so the BFF returns null. Wave 6.';
+const COST_UNLOCK =
+  'Pre-trade cost unlocks when a cost model is wired — there is no cost service today, so the value is null at the BFF boundary. Wave 5.';
+const SHAP_UNLOCK =
+  'Top feature contributions unlock when the engine persists shap_importance — TreeSHAP is implemented but never called. Wave 4.';
+const FEATURES_UNLOCK =
+  'Unlocks when the engine persists computed features (a save_features caller) — Wave 4.';
 
 export function SymbolDetailPage({ symbol }: { symbol: string }) {
   const { go } = useNav();
@@ -57,7 +36,24 @@ export function SymbolDetailPage({ symbol }: { symbol: string }) {
   const cs = sym.candles.slice(-TF[tf]);
   const line = cs.map((c, i) => ({ t: i, v: c.c }));
   const net = line[line.length - 1].v / line[0].v - 1;
-  const feats = symbolFeatures(symbol, sym.candles.map((c) => c.c));
+
+  // Real, persisted bar-level columns from the bars hypertable.
+  const b = sym.bar;
+  const isDollar = b.barType === 'dollar';
+  const durSec = Math.round(b.barDurationSeconds);
+  const durLabel = durSec >= 60 ? `${Math.floor(durSec / 60)}m ${durSec % 60}s` : `${durSec}s`;
+  const micro = [
+    { label: 'VWAP', value: fmtPrice(b.vwap), hint: 'volume-weighted' },
+    { label: 'Dollar volume', value: fmtCompact(b.dollarVolume), hint: 'Σ price × size' },
+    { label: 'Tick count', value: fmtNum(b.tickCount, 0), hint: 'trades in bar' },
+    { label: 'Buy / sell vol', value: `${fmtCompact(b.buyVolume, '')} / ${fmtCompact(b.sellVolume, '')}`, hint: 'classified flow' },
+    { label: 'Volume imbalance', value: fmtCompact(b.volumeImbalance, ''), hint: 'buy − sell' },
+    { label: 'Tick imbalance', value: fmtPctSigned(b.tickImbalanceRatio, 1), hint: '(buy − sell ticks) / n' },
+    { label: 'Imbalance', value: fmtNum(b.imbalance, 0), hint: 'cumulative signed' },
+    { label: 'Threshold', value: isDollar ? fmtCompact(b.threshold) : fmtNum(b.threshold, 0), hint: isDollar ? '$ volume to close bar' : 'imbalance to close bar' },
+    { label: 'Bar duration', value: durLabel, hint: 'open → close' },
+    { label: 'Bar type', value: b.barType, hint: 'sampling scheme' },
+  ];
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -121,7 +117,7 @@ export function SymbolDetailPage({ symbol }: { symbol: string }) {
               <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
                 <ProbRing value={idea.metaProbability} label="Meta" size={58} />
                 <ProbRing value={idea.calibratedProbability} label="Calibrated" size={58} />
-                <ProbRing value={idea.regimeFitScore} label="Regime fit" size={58} />
+                <DataUnavailable size={58} label="Regime fit" unlock={REGIME_UNLOCK} />
                 <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                   <div>
                     <div className="eyebrow">Target weight</div>
@@ -129,7 +125,9 @@ export function SymbolDetailPage({ symbol }: { symbol: string }) {
                   </div>
                   <div>
                     <div className="eyebrow">Pre-trade cost</div>
-                    <div className="num" style={{ fontSize: 18, fontWeight: 700, marginTop: 3 }}>{idea.expectedCostBps ? fmtBps(idea.expectedCostBps) : '—'}</div>
+                    <div style={{ marginTop: 6 }}>
+                      <DataUnavailable unlock={COST_UNLOCK} />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -142,18 +140,14 @@ export function SymbolDetailPage({ symbol }: { symbol: string }) {
         </Panel>
 
         <Panel title="Why" subtitle="Top model feature contributions">
-          {idea ? (
-            <MiniBars items={idea.shap.slice(0, 6).map((s) => ({ label: s.feature, value: s.contribution, sub: (s.contribution >= 0 ? '+' : '') + s.contribution.toFixed(3) }))} signed labelWidth={130} />
-          ) : (
-            <div className="muted" style={{ fontSize: 13 }}>No SHAP attribution without an active prediction.</div>
-          )}
+          <ComingState unlock={SHAP_UNLOCK} />
         </Panel>
       </div>
 
-      {/* Features */}
-      <Panel title="Live features" subtitle="Feature Factory · microstructure, volatility & classical signals">
+      {/* Bar microstructure — real, persisted columns from the bars hypertable */}
+      <Panel title="Bar microstructure" subtitle={`Persisted ${b.barType}-bar columns from the bars hypertable`}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-          {feats.map((f) => (
+          {micro.map((f) => (
             <div key={f.label} style={{ background: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: 12, padding: 14 }}>
               <div className="eyebrow">{f.label}</div>
               <div className="num" style={{ fontSize: 19, fontWeight: 680, marginTop: 6 }}>{f.value}</div>
@@ -162,6 +156,13 @@ export function SymbolDetailPage({ symbol }: { symbol: string }) {
           ))}
         </div>
       </Panel>
+
+      {/* Live feature grid — gated on a feature-persistence bridge */}
+      <ComingSoon
+        title="Live feature grid"
+        subtitle="Feature Factory · microstructure, volatility & classical signals"
+        unlock={FEATURES_UNLOCK}
+      />
 
       {drawer && idea && <IdeaDrawer idea={idea} onClose={() => setDrawer(false)} onOpenSymbol={() => setDrawer(false)} />}
     </div>

@@ -1,0 +1,9 @@
+# Xcode / build artifacts
+build/
+DerivedData/
+*.xcuserstate
+**/xcuserdata/
+**/*.xcworkspace/xcuserdata/
+.DS_Store
+# Note: ApertureTokens.generated.swift IS committed (generated from
+# ../aperture-web/tokens.json by scripts/gen-tokens.mjs).

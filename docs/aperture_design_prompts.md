@@ -1,5 +1,10 @@
 # Aperture — Design Prompt Pack
 
+> **Superseded (2026-06-13):** Use the complete, converged pack at
+> [aperture_design_prompts_v2.md](aperture_design_prompts_v2.md) — it covers all 16 web screens +
+> iOS + a States sheet on one locked design system. This original pack (10 web + iOS) is kept for
+> reference.
+
 A set of copy-paste prompts to hand to **Claude Design** (or any Claude that produces UI
 artifacts/mockups) so it designs every screen — look, information, layout, styles, colors — for the
 Aperture web + iOS apps.

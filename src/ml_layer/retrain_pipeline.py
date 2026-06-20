@@ -196,12 +196,14 @@ class RetrainPipeline:
                 return
 
         # 7. Strategy gate
-        gate_result = await self._run_gate(new_model, X, y)
+        gate_result = await self._run_gate(
+            new_model, X, y,
+            close=close, features=features, signals=signals, symbol=run.symbol,
+        )
         run.gate_results.update(gate_result)
         if not gate_result.get("passed", False):
-            run.rejection_reason = (
-                f"gate_failed: {gate_result.get('failing_gates', [])}"
-            )
+            failing = gate_result.get("failing_gates") or _failing_gate_names(gate_result)
+            run.rejection_reason = f"gate_failed: {failing}"
             return
 
         # 8-10. Register + promote
@@ -241,28 +243,85 @@ class RetrainPipeline:
             return incumbent.get("model") or incumbent
         return getattr(incumbent, "model", incumbent)
 
-    async def _run_gate(self, model: Any, X: pd.DataFrame, y: pd.Series) -> dict[str, Any]:
-        for name in ("validate", "quick_validate"):
-            fn = getattr(self.gate, name, None)
-            if not callable(fn):
-                continue
-            try:
-                result = fn(model=model, X=X, y=y, cost_model=self.cost_model)
-                if asyncio.iscoroutine(result):
-                    result = await result
-            except TypeError:
-                try:
-                    result = fn(model, X, y)
-                    if asyncio.iscoroutine(result):
-                        result = await result
-                except Exception as exc:
-                    log.warning("gate %s failed: %s", name, exc)
-                    continue
-            except Exception as exc:
-                log.warning("gate %s failed: %s", name, exc)
-                continue
-            return _coerce_gate_result(result)
-        return {"passed": False, "failing_gates": ["gate_unavailable"]}
+    async def _run_gate(
+        self,
+        model: Any,
+        X: pd.DataFrame,
+        y: pd.Series,
+        *,
+        close: pd.Series | None = None,
+        features: pd.DataFrame | None = None,
+        signals: pd.DataFrame | None = None,
+        symbol: str = "",
+    ) -> dict[str, Any]:
+        """Run the CPCV / DSR / PBO promotion gate against the candidate.
+
+        The gate (:class:`StrategyGate`) owns the §9 statistics; this method's
+        job is to thread it the data it needs — a wide ``close``/``signals``
+        panel, per-bar ``bet_sizes``, and the raw ``features`` from which the
+        gate builds its PBO variant grid — and surface the *real* verdict.
+
+        Two deliberate behaviours, both fixing the historical
+        ``gate_unavailable`` bug where every retrain was silently rejected:
+
+        * The gate is invoked through its actual ``evaluate_candidate``
+          signature (not a guessed ``(model, X, y)`` call that always raised).
+        * A gate that *errors while computing* is NOT swallowed — the
+          exception propagates so the run fails loudly with a traceback,
+          rather than degrading every candidate to a uniform reject.
+        """
+        fn = getattr(self.gate, "evaluate_candidate", None)
+        if not callable(fn):
+            # No usable gate wired. This is a configuration error, not a model
+            # verdict — surface it loudly and flag it distinctly so it can
+            # never be mistaken for a real CPCV/DSR/PBO failure.
+            log.error(
+                "gate %s exposes no evaluate_candidate(); cannot validate %s",
+                type(self.gate).__name__, symbol,
+            )
+            return {"passed": False, "failing_gates": ["gate_not_configured"]}
+
+        inputs = self._build_gate_inputs(close, features, signals, symbol)
+        result = fn(**inputs)
+        if asyncio.iscoroutine(result):
+            result = await result
+        return _coerce_gate_result(result)
+
+    def _build_gate_inputs(
+        self,
+        close: pd.Series | None,
+        features: pd.DataFrame | None,
+        signals: pd.DataFrame | None,
+        symbol: str,
+    ) -> dict[str, Any]:
+        """Assemble the keyword arguments ``StrategyGate.evaluate_candidate``
+        expects from the per-symbol data the pipeline computed."""
+        from src.backtesting.gate_orchestrator import (  # lazy: avoid import cycle
+            _bets_to_wide,
+            _signals_to_wide,
+        )
+
+        close_w = close.to_frame(symbol) if isinstance(close, pd.Series) else close
+        if close_w is None or getattr(close_w, "empty", True):
+            raise ValueError(f"gate requires a non-empty close panel for {symbol!r}")
+
+        index = close_w.index
+        flat = _flat_signals_or_none(signals)
+        signals_w = _signals_to_wide(flat, index, symbol)
+        bets_w = _bets_to_wide(flat, index, symbol)
+
+        horizon = _coerce_horizon(
+            getattr(self.meta_labeling_pipeline, "max_holding_period", None)
+        )
+
+        return {
+            "close": close_w,
+            "signals": signals_w,
+            "bet_sizes": bets_w,
+            "features": features,
+            "cost_model": self.cost_model,
+            "cpcv_horizon": horizon,
+        }
 
     def _register_and_promote(
         self,
@@ -375,6 +434,53 @@ async def _generate_signals(
             except TypeError:
                 continue
     raise AttributeError("signal_battery must expose generate() or generate_all()")
+
+
+def _coerce_horizon(value: Any, default: int = 10) -> int:
+    """Best-effort positive-int label horizon for CPCV purging; ``default``
+    when the pipeline's meta-labeler doesn't expose a usable
+    ``max_holding_period`` (e.g. a duck-typed mock)."""
+    try:
+        horizon = int(value)
+    except (TypeError, ValueError):
+        return default
+    return horizon if horizon >= 1 else default
+
+
+def _failing_gate_names(gate_result: dict[str, Any]) -> list[str]:
+    """Names of the §9 gates that did not pass (real ``False`` *or* not-run
+    ``None``), so a rejected retrain says *which* gate blocked it instead of an
+    empty list. Falls back to the cpcv/dsr/pbo aliases when present."""
+    names: list[str] = []
+    for full, short in (
+        ("gate_1_cpcv", "cpcv"),
+        ("gate_2_dsr", "dsr"),
+        ("gate_3_pbo", "pbo"),
+    ):
+        if full in gate_result:
+            value = gate_result[full]
+            passed = value.get("passed") if isinstance(value, dict) else value
+        elif short in gate_result:
+            passed = gate_result[short]
+        else:
+            continue
+        if passed is not True:
+            names.append(full)
+    return names
+
+
+def _flat_signals_or_none(signals: Any) -> pd.DataFrame | None:
+    """Return ``signals`` only if it is a flat signal-battery frame the wide
+    helpers can pivot (``timestamp``/``symbol``/``side`` columns); otherwise
+    ``None`` so the gate sees an explicit no-signal panel rather than crashing
+    on a malformed frame. This normalises inputs — it does NOT swallow gate
+    computation errors, which are surfaced loudly."""
+    required = {"timestamp", "symbol", "side"}
+    if not isinstance(signals, pd.DataFrame) or signals.empty:
+        return None
+    if required - set(signals.columns):
+        return None
+    return signals
 
 
 def _version_of(incumbent: Any) -> str | None:
