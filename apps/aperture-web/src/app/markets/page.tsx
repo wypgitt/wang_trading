@@ -7,6 +7,7 @@ import { Sparkline } from '@/components/charts/Sparkline';
 import { Icon } from '@/components/Icon';
 import { getMarkets, AssetType, Sym } from '@/data/api';
 import { deriveTrust } from '@/data/envelope';
+import { Loaded, ViewProps } from '@/data/useEnvelope';
 import { useChartColors } from '@/lib/theme';
 import { fmtCompact, fmtPrice, fmtTimeAgo } from '@/lib/format';
 
@@ -37,12 +38,15 @@ interface SortState {
   dir: SortDir;
 }
 
+// Null-safe accessors: a missing value sorts to the bottom (live BFF nulls
+// calendar changes / marketCap, and prices/volume for priceless rows). Never a
+// fake 0 that would rank a no-data row alongside a true zero.
 const SORT_GET: Record<SortKey, (s: Sym) => number> = {
-  price: (s) => s.price,
-  change1d: (s) => s.change1d,
-  change1w: (s) => s.change1w,
-  change1m: (s) => s.change1m,
-  volume: (s) => s.volume,
+  price: (s) => s.price ?? -Infinity,
+  change1d: (s) => s.change1d ?? -Infinity,
+  change1w: (s) => s.change1w ?? -Infinity,
+  change1m: (s) => s.change1m ?? -Infinity,
+  volume: (s) => s.volume ?? -Infinity,
 };
 
 function ariaSortFor(state: SortState, key: SortKey): 'ascending' | 'descending' | 'none' {
@@ -96,13 +100,16 @@ function SortHeader({
 }
 
 export default function MarketsPage() {
+  return <Loaded fetcher={getMarkets} View={MarketsView} />;
+}
+
+function MarketsView({ data, env }: ViewProps<Sym[]>) {
   const C = useChartColors();
   const [filter, setFilter] = useState<Filter>('all');
   const [sort, setSort] = useState<SortState>({ key: null, dir: 'desc' });
 
-  // Capture the full envelope so freshness/staleness ride the real trust contract.
-  const env = getMarkets();
-  const all = env.data;
+  // Full envelope rides the real trust contract for freshness/staleness.
+  const all = data;
   const trust = deriveTrust(env);
 
   const onSort = (key: SortKey) =>
@@ -119,7 +126,8 @@ export default function MarketsPage() {
     if (sort.key === null) {
       list.sort((a, b) => {
         if (a.hasIdea !== b.hasIdea) return a.hasIdea ? -1 : 1;
-        return Math.abs(b.change1d) - Math.abs(a.change1d);
+        // Null 1D change (no producer / priceless row) sinks below real movers.
+        return Math.abs(b.change1d ?? 0) - Math.abs(a.change1d ?? 0);
       });
       return list;
     }
@@ -235,14 +243,17 @@ export default function MarketsPage() {
                   </td>
                   <td>
                     <Link href={`/symbols/${s.symbol}`} style={{ display: 'inline-flex', justifyContent: 'flex-end', width: '100%' }}>
-                      <Sparkline data={s.spark} width={92} height={28} />
+                      {/* Sparkline self-guards (<2 pts renders blank); empty/absent spark = no trend, not a crash. */}
+                      <Sparkline data={s.spark ?? []} width={92} height={28} />
                     </Link>
                   </td>
-                  <td className="num"><Link href={`/symbols/${s.symbol}`}>{fmtPrice(s.price)}</Link></td>
-                  <td><Delta value={s.change1d} dp={1} /></td>
-                  <td><Delta value={s.change1w} dp={1} arrow={false} /></td>
-                  <td><Delta value={s.change1m} dp={1} arrow={false} /></td>
-                  <td className="num muted" style={{ paddingRight: 18 }}>{fmtCompact(s.volume)}</td>
+                  {/* Nullable bar-derived cells: live BFF nulls calendar changes (1W/1M),
+                      marketCap, and price/volume for priceless rows. Render "—", never a fake 0. */}
+                  <td className="num"><Link href={`/symbols/${s.symbol}`}>{s.price == null ? <Dash /> : fmtPrice(s.price)}</Link></td>
+                  <td>{s.change1d == null ? <Dash /> : <Delta value={s.change1d} dp={1} />}</td>
+                  <td>{s.change1w == null ? <Dash /> : <Delta value={s.change1w} dp={1} arrow={false} />}</td>
+                  <td>{s.change1m == null ? <Dash /> : <Delta value={s.change1m} dp={1} arrow={false} />}</td>
+                  <td className="num muted" style={{ paddingRight: 18 }}>{s.volume == null ? <Dash /> : fmtCompact(s.volume)}</td>
                   <td style={{ paddingRight: 14 }}>
                     <Link href={`/symbols/${s.symbol}`} className="dim" style={{ display: 'inline-flex' }}>
                       <Icon name="chevronRight" size={15} />
@@ -255,5 +266,16 @@ export default function MarketsPage() {
         </table>
       </Panel>
     </div>
+  );
+}
+
+// Honest em-dash for an absent numeric cell (live BFF nulls; priceless rows).
+// dim + the "no value" aria-label keep it out of the screen-reader number stream.
+function Dash() {
+  const C = useChartColors();
+  return (
+    <span className="dim" aria-label="no value" style={{ color: C.text3 }}>
+      —
+    </span>
   );
 }

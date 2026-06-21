@@ -5,15 +5,21 @@ import { ActionPill, AssetGlyph, StatusDot } from '@/components/ui/primitives';
 import { ComingState } from '@/components/ui/honesty';
 import { Icon } from '@/components/Icon';
 import { getStrategy } from '@/data/api';
-import { TradeIdea } from '@/data/mock';
+import { Strategy, TradeIdea } from '@/data/mock';
+import { Loaded, ViewProps } from '@/data/useEnvelope';
 import { familyReadiness } from '@/lib/readiness';
 import { CAT, REGIME_HEX, REGIME_LABEL } from '@/lib/colors';
 import { useChartColors } from '@/lib/theme';
 import { fmtPctSigned, fmtProb } from '@/lib/format';
 
 export default function Page({ params }: { params: { id: string } }) {
+  const { id } = params;
+  return <Loaded fetcher={() => getStrategy(id)} deps={[id]} View={StrategyView} />;
+}
+
+function StrategyView({ data }: ViewProps<{ strategy: Strategy; ideas: TradeIdea[] }>) {
   const C = useChartColors();
-  const { strategy: s, ideas } = getStrategy(params.id).data;
+  const { strategy: s, ideas } = data;
   const catColor = CAT[s.category] ?? C.accent;
   // Data-driven status: a family is Active only when the deployed single-symbol
   // bars path can fire its generator (src/signal_battery/orchestrator.py). Never

@@ -3,8 +3,13 @@ import { Panel } from '@/components/ui/Panel';
 import { Stat, StatusDot } from '@/components/ui/primitives';
 import { ComingState } from '@/components/ui/honesty';
 import { Icon } from '@/components/Icon';
-import { getModel } from '@/data/api';
+import { getModel, MODEL } from '@/data/api';
+import { Loaded, ViewProps } from '@/data/useEnvelope';
 import { useChartColors } from '@/lib/theme';
+
+// `getModel` resolves ApiEnvelope<typeof MODEL>; mirror that here since the data
+// type isn't separately exported from the accessor module.
+type ModelData = typeof MODEL;
 
 // Entry-gate threshold — the meta-prob below which the engine does NOT act.
 // Used to color histogram buckets and place a reference marker.
@@ -22,10 +27,16 @@ const FAM_COLOR: Record<string, string> = {
   StructuralBreak: '#9aa4b2',
 };
 
+// "—" em-dash for an absent scalar — never a fake 0.
+const DASH = '—';
+
 export default function ModelPage() {
+  return <Loaded fetcher={getModel} View={ModelView} />;
+}
+
+function ModelView({ data }: ViewProps<ModelData>) {
   const C = useChartColors();
-  const env = getModel();
-  const m = env.data;
+  const m = data;
 
   // State: no production model loaded → one calm MODEL_REQUIRED panel (spec §States).
   if (m.version == null) {
@@ -55,15 +66,21 @@ export default function ModelPage() {
   }
 
   // Meta-probability histogram — LIVE (model-gated). Proportional bars from raw counts.
-  const histMax = Math.max(...m.metaProbHist.map((b) => b.count), 1);
+  const metaProbHist = m.metaProbHist ?? [];
+  const histMax = Math.max(...metaProbHist.map((b) => b.count ?? 0), 1);
 
-  // Promotion gate — real booleans, uniformly false because the retrain gate is
-  // hard-broken. Rendered as NEUTRAL "not run", never green-pass / red-fail.
+  // Retrain timeline — LIVE but may be empty when no MLflow history is persisted.
+  const retrainTimeline = m.retrainTimeline ?? [];
+
+  // Promotion gate — real booleans (or null when the run didn't emit them).
+  // Uniformly false/null because the retrain gate is hard-broken. Rendered as
+  // NEUTRAL "not run", never green-pass / red-fail.
   const GATE_TIP = 'did not run ≠ failed — the retrain gate is hard-broken (retrain_pipeline.py:265)';
-  const gates: [string, boolean][] = [
-    ['CPCV', m.gates.cpcv],
-    ['DSR', m.gates.dsr],
-    ['PBO', m.gates.pbo],
+  const g = m.gates ?? { cpcv: null, dsr: null, pbo: null };
+  const gates: [string, boolean | null][] = [
+    ['CPCV', g.cpcv ?? null],
+    ['DSR', g.dsr ?? null],
+    ['PBO', g.pbo ?? null],
   ];
 
   return (
@@ -77,13 +94,13 @@ export default function ModelPage() {
               <span className="pill pill-buy"><StatusDot ok live /> Production</span>
             </div>
             <div className="muted" style={{ fontSize: 13, marginTop: 6 }}>
-              {m.type} · trained {m.trainedAt} · run <span className="mono" style={{ color: C.text2 }}>{m.runId}</span> · <span className="num">{m.lastRetrainHours}</span>h ago
+              {m.type ?? DASH} · trained {m.trainedAt ?? DASH} · run <span className="mono" style={{ color: C.text2 }}>{m.runId ?? DASH}</span> · {m.lastRetrainHours == null ? <span>{DASH}</span> : <><span className="num">{m.lastRetrainHours}</span>h ago</>}
             </div>
           </div>
           <div style={{ display: 'flex', gap: 30 }}>
-            <Stat label="CV score" value={m.cvScore.toFixed(3)} sub="mean · 5-fold" valueSize={20} />
-            <Stat label="Train acc" value={m.trainAcc.toFixed(3)} sub="in-sample" valueSize={20} />
-            <Stat label="Events" value={<span className="num">{m.trainingEvents.toLocaleString()}</span>} sub="training labels" valueSize={20} />
+            <Stat label="CV score" value={m.cvScore == null ? DASH : m.cvScore.toFixed(3)} sub="mean · 5-fold" valueSize={20} />
+            <Stat label="Train acc" value={m.trainAcc == null ? DASH : m.trainAcc.toFixed(3)} sub="in-sample" valueSize={20} />
+            <Stat label="Events" value={m.trainingEvents == null ? DASH : <span className="num">{m.trainingEvents.toLocaleString()}</span>} sub="training labels" valueSize={20} />
           </div>
         </div>
         <div
@@ -152,7 +169,7 @@ export default function ModelPage() {
       {/* 2 — Meta-prob histogram [LIVE bars] | Calibration reliability [COMING wave 6] */}
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: 16, alignItems: 'stretch' }}>
         <Panel title="Meta-probability histogram" subtitle="Predictions this cycle by confidence bucket — live, model-gated">
-          {m.metaProbHist.length === 0 ? (
+          {metaProbHist.length === 0 ? (
             // Empty, NOT ComingState — the producer (meta_labels) exists; it's just
             // legitimately empty for this model_version (spec §States).
             <div
@@ -174,17 +191,18 @@ export default function ModelPage() {
           ) : (
             <>
               <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, height: 180, paddingTop: 6 }}>
-                {m.metaProbHist.map((b) => {
-                  const frac = b.count / histMax;
+                {metaProbHist.map((b) => {
+                  const count = b.count ?? 0;
+                  const frac = count / histMax;
                   // Color below the entry gate vs at/above it distinctly: below-gate
                   // predictions don't act (muted), at/above-gate ones do (accent2).
                   const atGate = parseFloat(b.bucket) >= ENTRY_GATE;
                   const color = atGate ? C.accent2 : C.accent;
                   return (
                     <div key={b.bucket} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, height: '100%', justifyContent: 'flex-end' }}>
-                      <span className="num" style={{ fontSize: 10.5, color: C.text3 }}>{b.count}</span>
+                      <span className="num" style={{ fontSize: 10.5, color: C.text3 }}>{count}</span>
                       <div
-                        title={`p ${b.bucket} · ${b.count} predictions · ${atGate ? 'at/above' : 'below'} entry gate (${ENTRY_GATE})`}
+                        title={`p ${b.bucket} · ${count} predictions · ${atGate ? 'at/above' : 'below'} entry gate (${ENTRY_GATE})`}
                         style={{ width: '100%', height: `${Math.max(2, frac * 100)}%`, background: color, borderRadius: '4px 4px 0 0', minHeight: 3, opacity: atGate ? 1 : 0.55 }}
                       />
                       <span className="mono" style={{ fontSize: 10.5, color: C.text3 }}>{b.bucket}</span>
@@ -258,37 +276,58 @@ export default function ModelPage() {
         title="Retrain timeline"
         subtitle="Promote / reject events from MLflow — live"
       >
-        <div style={{ display: 'flex', flexDirection: 'column' }}>
-          {m.retrainTimeline.map((r, i) => (
-            <div key={`${r.date}-${i}`} style={{ display: 'flex', gap: 14, padding: '12px 0', borderTop: i ? '1px solid var(--border)' : 'none' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 3 }}>
-                <StatusDot ok={r.promoted} />
-                {i < m.retrainTimeline.length - 1 && <span style={{ width: 1, flex: 1, background: C.border, marginTop: 4 }} />}
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <span style={{ fontSize: 13.5, fontWeight: 550 }}>{r.event}</span>
-                    <span
-                      className="pill"
-                      style={{
-                        height: 20,
-                        fontSize: 10.5,
-                        color: r.promoted ? C.pos : C.neg,
-                        borderColor: `${r.promoted ? C.pos : C.neg}40`,
-                        background: `${r.promoted ? C.pos : C.neg}14`,
-                      }}
-                    >
-                      {r.promoted ? 'Promoted' : 'Rejected'}
-                    </span>
-                  </div>
-                  <span className="num muted" style={{ fontSize: 12.5 }}>Sharpe {r.sharpe.toFixed(2)}</span>
+        {retrainTimeline.length === 0 ? (
+          // Empty, NOT ComingState — the MLflow run-history producer exists; it's
+          // just legitimately empty (no promote/reject events recorded yet).
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 8,
+              minHeight: 120,
+              textAlign: 'center',
+            }}
+          >
+            <span style={{ display: 'grid', placeItems: 'center', width: 36, height: 36, borderRadius: 11, background: C.surfaceInset, color: C.text3 }}>
+              <Icon name="model" size={17} />
+            </span>
+            <div className="dim" style={{ fontSize: 13 }}>No retrain events recorded yet.</div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {retrainTimeline.map((r, i) => (
+              <div key={`${r.date}-${i}`} style={{ display: 'flex', gap: 14, padding: '12px 0', borderTop: i ? '1px solid var(--border)' : 'none' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 3 }}>
+                  <StatusDot ok={r.promoted} />
+                  {i < retrainTimeline.length - 1 && <span style={{ width: 1, flex: 1, background: C.border, marginTop: 4 }} />}
                 </div>
-                <div className="dim mono" style={{ fontSize: 11.5, marginTop: 3 }}>{r.date}</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <span style={{ fontSize: 13.5, fontWeight: 550 }}>{r.event ?? DASH}</span>
+                      <span
+                        className="pill"
+                        style={{
+                          height: 20,
+                          fontSize: 10.5,
+                          color: r.promoted ? C.pos : C.neg,
+                          borderColor: `${r.promoted ? C.pos : C.neg}40`,
+                          background: `${r.promoted ? C.pos : C.neg}14`,
+                        }}
+                      >
+                        {r.promoted ? 'Promoted' : 'Rejected'}
+                      </span>
+                    </div>
+                    <span className="num muted" style={{ fontSize: 12.5 }}>Sharpe {r.sharpe == null ? DASH : r.sharpe.toFixed(2)}</span>
+                  </div>
+                  <div className="dim mono" style={{ fontSize: 11.5, marginTop: 3 }}>{r.date ?? DASH}</div>
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
         <div
           className="muted"
           style={{

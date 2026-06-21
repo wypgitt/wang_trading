@@ -7,11 +7,14 @@
 import { STALE_THRESHOLD_SECONDS } from '@/lib/colors';
 
 export interface ApiEnvelope<T> {
-  data: T;
+  // The live BFF returns data:null on a hard failure and may null these
+  // freshness fields when unknown (envelope metadata is always present, but
+  // its values can be null) — the UI treats null as "unknown", never zero.
+  data: T | null;
   as_of: string; // ISO timestamp of the snapshot
   source: string;
-  staleness_seconds: number;
-  source_freshness: Record<string, number>;
+  staleness_seconds: number | null;
+  source_freshness: Record<string, number> | null;
   model_version: string | null;
   regime: Regime | null; // null today — RegimeDetector has zero runtime callers
   warnings: string[];
@@ -58,13 +61,16 @@ export interface TrustState {
 }
 
 export function deriveTrust<T>(env: ApiEnvelope<T>): TrustState {
+  const staleness = env.staleness_seconds ?? 0;
   return {
     mode: 'PAPER', // engine is read-only; live_orders_sent=0
     modelLoaded: env.model_version != null,
     modelVersion: env.model_version,
     asOf: env.as_of,
-    stalenessSeconds: env.staleness_seconds,
-    stale: env.staleness_seconds > STALE_THRESHOLD_SECONDS,
+    stalenessSeconds: staleness,
+    // Unknown staleness (null) is not "stale" — only a real value over the
+    // threshold trips the degraded state.
+    stale: env.staleness_seconds != null && env.staleness_seconds > STALE_THRESHOLD_SECONDS,
     requestId: env.request_id,
   };
 }

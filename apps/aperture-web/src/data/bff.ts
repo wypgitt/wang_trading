@@ -14,7 +14,11 @@
 // ---------------------------------------------------------------------------
 import { ApiEnvelope, nextRequestId } from './envelope';
 
-export const BFF_URL = process.env.APERTURE_BFF_URL ?? '';
+// NEXT_PUBLIC_ so the URL is inlined into the client bundle (screens are client
+// components and fetch the BFF directly; the BFF CORS-allows the origin).
+// APERTURE_BFF_URL is also accepted for server-side / non-Next callers.
+export const BFF_URL =
+  process.env.NEXT_PUBLIC_APERTURE_BFF_URL ?? process.env.APERTURE_BFF_URL ?? '';
 export const USE_BFF = BFF_URL.length > 0;
 
 export class BffError extends Error {
@@ -44,10 +48,19 @@ export async function fetchEnvelope<T>(path: string, init?: RequestInit): Promis
     headers: { Accept: 'application/json', ...(init?.headers ?? {}) },
   });
   const reqId = res.headers.get('x-request-id') ?? nextRequestId();
+  const body = (await res.json().catch(() => null)) as ApiEnvelope<T> | null;
+  // The BFF returns a full envelope even on honest errors (e.g. 503
+  // SNAPSHOT_UNAVAILABLE, 404 NOT_FOUND): surface it so the screen's Error
+  // state renders the real code + request id instead of a synthetic message.
+  // Only a transport failure / non-envelope body throws.
   if (!res.ok) {
+    if (body && typeof body === 'object' && Array.isArray(body.errors)) {
+      return { ...body, request_id: body.request_id ?? reqId };
+    }
     throw new BffError(`BFF ${res.status} for ${path}`, res.status, reqId);
   }
-  const env = (await res.json()) as ApiEnvelope<T>;
-  // The BFF already shapes the envelope; ensure request_id is always present.
-  return { ...env, request_id: env.request_id ?? reqId };
+  if (!body) {
+    throw new BffError(`BFF ${res.status} returned no body for ${path}`, res.status, reqId);
+  }
+  return { ...body, request_id: body.request_id ?? reqId };
 }

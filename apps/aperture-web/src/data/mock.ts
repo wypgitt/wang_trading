@@ -16,18 +16,22 @@ export interface Sym {
   symbol: string;
   name: string;
   type: AssetType;
-  price: number;
-  change1d: number;
-  change1w: number;
-  change1m: number;
-  changeYtd: number;
+  // Nullable for the live BFF: bars-derived values are absent when the bars
+  // table is unreachable/empty for a symbol; marketCap + calendar changes
+  // (1w/1m/ytd) have no producer at all (COMING). Mock supplies real numbers,
+  // so it still satisfies these. The UI renders null as "—", never a fake 0.
+  price: number | null;
+  change1d: number | null; // live: the session/window change from bars
+  change1w: number | null; // COMING (no calendar-anchored bars)
+  change1m: number | null; // COMING
+  changeYtd: number | null; // COMING
   spark: number[];
   line: Point[];
   candles: Candle[];
-  marketCap: number;
-  volume: number;
+  marketCap: number | null; // COMING (no source in bars or the universe map)
+  volume: number | null;
   hasIdea: boolean;
-  bar: BarMicro;
+  bar: BarMicro | null;
 }
 
 // Bar microstructure — mirrors the persisted columns of the `bars` hypertable
@@ -246,23 +250,27 @@ const RAW_POS: Array<[string, number, number, string]> = [
 
 const positions: Position[] = RAW_POS.map(([symbol, side, weight, strategy], i) => {
   const s = symBy(symbol);
+  // Mock symbols always carry real numbers (Sym widened price/change to allow
+  // the live BFF's nulls); ?? keeps this local computation total.
+  const price = s.price ?? 0;
+  const change1d = s.change1d ?? 0;
   const notional = weight * NAV;
-  const qty = Math.round((notional / s.price) * (side as number));
-  const entry = s.price * (1 - side * (0.02 + (i % 5) * 0.012));
-  const uPct = side * (s.price / entry - 1);
+  const qty = Math.round((notional / price) * (side as number));
+  const entry = price * (1 - side * (0.02 + (i % 5) * 0.012));
+  const uPct = side * (price / entry - 1);
   return {
     symbol,
     type: s.type,
     side,
     qty,
     entryPrice: entry,
-    markPrice: s.price,
+    markPrice: price,
     weight: weight * side,
     notional,
     unrealizedPnl: uPct * notional,
     unrealizedPct: uPct,
     strategy,
-    dayPnl: s.change1d * notional * side,
+    dayPnl: change1d * notional * side,
   };
 });
 
@@ -413,7 +421,7 @@ export const TRADE_IDEAS: TradeIdea[] = IDEA_DEFS.map((d, i) => {
     { family: d.family, side: d.side, confidence: d.meta ? d.meta + 0.05 : 0.5, meta: famMeta(d.family) },
   ];
   if (i % 2 === 0 && d.action !== 'MODEL_REQUIRED') {
-    signals.push({ family: 'ma_crossover', side: d.side, confidence: 0.41, meta: { fast_ema: s.price * 0.99, slow_ema: s.price * 0.97 } });
+    signals.push({ family: 'ma_crossover', side: d.side, confidence: 0.41, meta: { fast_ema: (s.price ?? 0) * 0.99, slow_ema: (s.price ?? 0) * 0.97 } });
   }
   const shap = shapSet(i + 3);
   return {
@@ -422,7 +430,7 @@ export const TRADE_IDEAS: TradeIdea[] = IDEA_DEFS.map((d, i) => {
     action: d.action,
     targetWeight: d.weight,
     targetNotional: d.weight * NAV,
-    estimatedQuantity: d.weight ? Math.round((notional / s.price) * d.side) : 0,
+    estimatedQuantity: d.weight ? Math.round((notional / (s.price ?? 0)) * d.side) : 0,
     latestPrice: s.price,
     barType: s.type === 'crypto' ? 'dollar' : 'tib',
     barsLoaded: 980 + i * 7,
@@ -500,17 +508,21 @@ export interface Strategy {
   source: string;
   thesis: string;
   status: StratStatus;
-  sharpe: number;
-  winRate: number;
-  trades: number;
-  contributionPct: number;
-  pnlYtd: number;
-  allocation: number;
+  // Performance fields are nullable for the live BFF: there is no backtest-run
+  // or track-record persistence yet, so the families endpoint returns these as
+  // null/empty (COMING). Mock supplies real numbers. activeSignals IS real
+  // (counted from the live snapshot). The UI renders null as a Coming affordance.
+  sharpe: number | null;
+  winRate: number | null;
+  trades: number | null;
+  contributionPct: number | null;
+  pnlYtd: number | null;
+  allocation: number | null;
   regimeFit: Record<string, number>;
   params: Array<{ key: string; value: string }>;
   equityCurve: Point[];
   activeSignals: number;
-  avgHoldBars: number;
+  avgHoldBars: number | null;
   assetClasses: AssetType[];
 }
 

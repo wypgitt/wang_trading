@@ -22,22 +22,36 @@ interface Item {
 }
 
 function useItems(): Item[] {
-  return useMemo(() => {
-    const symbols: Item[] = getMarkets().data.map((s) => ({
-      kind: 'Symbol', key: `sym:${s.symbol}`, label: s.symbol, sub: s.name,
-      href: `/symbols/${s.symbol}`, glyph: { symbol: s.symbol, type: s.type },
-    }));
-    const strategies: Item[] = getStrategies().data.map((s) => ({
-      kind: 'Strategy', key: `strat:${s.id}`, label: s.name, sub: s.category, href: `/strategy/${s.id}`,
-    }));
-    const screens: Item[] = NAV.flatMap((grp) =>
-      grp.items.map((it) => ({
-        kind: 'Screen' as const, key: `screen:${it.id}`, label: it.label, sub: grp.group,
-        href: it.href, coming: it.readiness === 'coming',
-      })),
-    );
-    return [...screens, ...symbols, ...strategies];
+  // Screens are static (instant). Symbols + strategies come from the async data
+  // layer (mock resolves instantly; the live BFF fetches), so we load them into
+  // state — the palette is usable immediately and the entities fill in.
+  const screens: Item[] = useMemo(
+    () =>
+      NAV.flatMap((grp) =>
+        grp.items.map((it) => ({
+          kind: 'Screen' as const, key: `screen:${it.id}`, label: it.label, sub: grp.group,
+          href: it.href, coming: it.readiness === 'coming',
+        })),
+      ),
+    [],
+  );
+  const [dynamic, setDynamic] = useState<Item[]>([]);
+  useEffect(() => {
+    let alive = true;
+    Promise.all([getMarkets(), getStrategies()]).then(([m, s]) => {
+      if (!alive) return;
+      const symbols: Item[] = (m.data ?? []).map((sym) => ({
+        kind: 'Symbol', key: `sym:${sym.symbol}`, label: sym.symbol, sub: sym.name,
+        href: `/symbols/${sym.symbol}`, glyph: { symbol: sym.symbol, type: sym.type },
+      }));
+      const strategies: Item[] = (s.data ?? []).map((st) => ({
+        kind: 'Strategy', key: `strat:${st.id}`, label: st.name, sub: st.category, href: `/strategy/${st.id}`,
+      }));
+      setDynamic([...symbols, ...strategies]);
+    });
+    return () => { alive = false; };
   }, []);
+  return useMemo(() => [...screens, ...dynamic], [screens, dynamic]);
 }
 
 function score(q: string, it: Item): number {

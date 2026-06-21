@@ -9,6 +9,7 @@ import { IdeaDrawer } from '@/components/ideas/IdeaDrawer';
 import { getTradeIdeas } from '@/data/api';
 import { TradeIdea } from '@/data/mock';
 import { deriveTrust } from '@/data/envelope';
+import { Loaded, ViewProps } from '@/data/useEnvelope';
 import { useDensity } from '@/lib/density';
 import { useChartColors } from '@/lib/theme';
 import { fmtCompact, fmtPctSigned, fmtProb, fmtTimeAgo } from '@/lib/format';
@@ -42,13 +43,12 @@ function Tile({ label, value, sub, color }: { label: string; value: string; sub:
 
 const FILTER_VALUES: Filter[] = ['all', 'BUY', 'SELL', 'WATCH', 'MODEL_REQUIRED'];
 
-function IdeasInner() {
+function IdeasInner({ data, env }: ViewProps<TradeIdea[]>) {
   const C = useChartColors();
   const params = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
-  const env = getTradeIdeas();
-  const all = env.data;
+  const all = data;
   const trust = deriveTrust(env);
   const { density } = useDensity();
   // Pro density reveals the ABSENT coming columns (Regime fit, Cost) + diagnostic
@@ -227,7 +227,7 @@ function IdeasInner() {
 export default function IdeasPage() {
   return (
     <Suspense fallback={<div className="dim" style={{ padding: 40 }}>Loading ideas…</div>}>
-      <IdeasInner />
+      <Loaded fetcher={getTradeIdeas} View={IdeasInner} />
     </Suspense>
   );
 }

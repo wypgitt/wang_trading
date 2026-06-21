@@ -8,9 +8,10 @@ import { ComingState } from '@/components/ui/honesty';
 import { DataUnavailable } from '@/components/ui/honesty';
 import { Icon } from '@/components/Icon';
 import { useDensity } from '@/lib/density';
-import { getOverview } from '@/data/api';
+import { getOverview, OverviewData } from '@/data/api';
 import { TradeIdea } from '@/data/mock';
 import { deriveTrust } from '@/data/envelope';
+import { Loaded, ViewProps } from '@/data/useEnvelope';
 import { useChartColors } from '@/lib/theme';
 import { fmtPctSigned } from '@/lib/format';
 
@@ -60,11 +61,14 @@ function diffSnapshot(ideas: TradeIdea[]): Change[] {
 }
 
 export default function OverviewPage() {
+  return <Loaded fetcher={getOverview} View={OverviewView} />;
+}
+
+function OverviewView({ data, env }: ViewProps<OverviewData>) {
   const C = useChartColors();
   const { density } = useDensity();
-  const env = getOverview();
   const trust = deriveTrust(env);
-  const { actionCounts: ac, topActionable, enginePulse } = env.data;
+  const { actionCounts: ac, topActionable, enginePulse } = data;
   const total = ac.buy + ac.sell + ac.watch;
 
   // Trust state derived from the envelope. Stale = staleness > 90 (last-good

@@ -6,6 +6,7 @@ import { StatusDot, Segmented } from '@/components/ui/primitives';
 import { DataUnavailable } from '@/components/ui/honesty';
 import { Icon } from '@/components/Icon';
 import { getStrategies, getTradeIdeas, AssetType, Strategy } from '@/data/api';
+import { Loaded, ViewProps, useEnvelope } from '@/data/useEnvelope';
 import { CAT, ASSET_TINT } from '@/lib/colors';
 import { useChartColors } from '@/lib/theme';
 import { familyReadiness, familyCounts } from '@/lib/readiness';
@@ -48,10 +49,18 @@ const PERF_UNLOCK =
   'Per-strategy performance — coming when backtest metrics are persisted (retrain gate broken, retrain_pipeline.py:265).';
 
 export default function StrategiesPage() {
+  return <Loaded fetcher={getStrategies} View={StrategiesView} />;
+}
+
+function StrategiesView({ data }: ViewProps<Strategy[]>) {
   const C = useChartColors();
   const [cat, setCat] = useState<CatFilter>('All');
-  const strategies = getStrategies().data;
-  const ideas = getTradeIdeas().data;
+  const strategies = data;
+  // Secondary accessor — the live active-idea counts. Fetched independently so
+  // a slow/failed ideas call never blocks the strategy roster; guard the null
+  // env (still loading) by treating ideas as empty until it resolves.
+  const ideasEnv = useEnvelope(getTradeIdeas);
+  const ideas = ideasEnv.env?.data ?? [];
 
   // LIVE: count of actionable (BUY/SELL) live ideas per family this cycle.
   const activeByFamily = useMemo(() => {

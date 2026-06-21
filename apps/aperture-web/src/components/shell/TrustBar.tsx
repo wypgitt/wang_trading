@@ -7,6 +7,7 @@ import { useTheme } from '../../lib/theme';
 import { screenByHref } from '../../lib/readiness';
 import { getTradeIdeas } from '../../data/api';
 import { deriveTrust } from '../../data/envelope';
+import { useEnvelope } from '../../data/useEnvelope';
 import { fmtTimeAgo } from '../../lib/format';
 
 // Page title + sub, derived from the route (detail routes resolve their own title).
@@ -36,9 +37,13 @@ export function TrustBar() {
   // The Model pill reflects whether a production model is LOADED (model_version
   // present). A per-idea MODEL_REQUIRED (e.g. insufficient history) is handled
   // inline on that idea — it does not flip the global pill.
-  const env = getTradeIdeas();
-  const trust = deriveTrust(env);
-  const modelOk = trust.modelLoaded;
+  const { env } = useEnvelope(getTradeIdeas);
+  const trust = env ? deriveTrust(env) : null;
+  const loading = trust == null;
+  const modelOk = trust?.modelLoaded ?? false;
+  const stale = trust?.stale ?? false;
+  const stalenessSeconds = trust?.stalenessSeconds ?? 0;
+  const modelVersion = trust?.modelVersion ?? null;
 
   return (
     <header className="trust-bar">
@@ -73,22 +78,25 @@ export function TrustBar() {
       <Link
         href="/model"
         className="chip"
-        style={{ borderColor: modelOk ? 'rgba(30,203,139,0.4)' : 'rgba(240,169,59,0.4)', color: modelOk ? 'var(--pos)' : 'var(--warn)' }}
-        title={modelOk ? `Production model loaded: ${trust.modelVersion}` : 'Some ideas return MODEL_REQUIRED — probabilities gated'}
+        style={{
+          borderColor: loading ? 'var(--border)' : modelOk ? 'rgba(30,203,139,0.4)' : 'rgba(240,169,59,0.4)',
+          color: loading ? 'var(--text-3)' : modelOk ? 'var(--pos)' : 'var(--warn)',
+        }}
+        title={loading ? 'Syncing…' : modelOk ? `Production model loaded: ${modelVersion}` : 'Some ideas return MODEL_REQUIRED — probabilities gated'}
       >
-        <span aria-hidden="true" className="dot" style={{ background: modelOk ? 'var(--pos)' : 'var(--warn)' }} />
-        {modelOk ? 'MODEL LOADED' : 'MODEL REQUIRED'}
+        <span aria-hidden="true" className="dot" style={{ background: loading ? 'var(--text-3)' : modelOk ? 'var(--pos)' : 'var(--warn)' }} />
+        {loading ? 'SYNCING' : modelOk ? 'MODEL LOADED' : 'MODEL REQUIRED'}
       </Link>
 
       {/* Freshness — the single most important honesty signal */}
       <Link
         href="/overview"
         className="chip"
-        style={{ borderColor: trust.stale ? 'rgba(240,169,59,0.4)' : 'var(--border)', color: trust.stale ? 'var(--warn)' : 'var(--text-2)' }}
-        title={`Snapshot ${trust.stalenessSeconds}s old · staleness threshold 90s`}
+        style={{ borderColor: stale ? 'rgba(240,169,59,0.4)' : 'var(--border)', color: stale ? 'var(--warn)' : 'var(--text-2)' }}
+        title={loading ? 'Syncing snapshot…' : `Snapshot ${stalenessSeconds}s old · staleness threshold 90s`}
       >
-        <span aria-hidden="true" className={`dot ${trust.stale ? '' : 'live-dot'}`} style={{ background: trust.stale ? 'var(--warn)' : 'var(--pos)' }} />
-        {trust.stale ? 'STALE' : fmtTimeAgo(trust.stalenessSeconds)}
+        <span aria-hidden="true" className={`dot ${stale || loading ? '' : 'live-dot'}`} style={{ background: loading ? 'var(--text-3)' : stale ? 'var(--warn)' : 'var(--pos)' }} />
+        {loading ? 'syncing…' : stale ? 'STALE' : fmtTimeAgo(stalenessSeconds)}
       </Link>
 
       {/* Density toggle */}

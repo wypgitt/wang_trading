@@ -7,9 +7,10 @@ import { ComingState, DataUnavailable } from '@/components/ui/honesty';
 import { CandleChart } from '@/components/charts/CandleChart';
 import { AreaChart } from '@/components/charts/AreaChart';
 import { Icon } from '@/components/Icon';
-import { getSymbol, SYMBOLS } from '@/data/api';
+import { getSymbol, SymbolDetail, SYMBOLS } from '@/data/api';
 import { Point } from '@/lib/rng';
 import { STALE_THRESHOLD_SECONDS } from '@/lib/colors';
+import { Loaded, ViewProps } from '@/data/useEnvelope';
 import { useChartColors } from '@/lib/theme';
 import { fmtCompact, fmtNum, fmtPctSigned, fmtPrice, sideLabel } from '@/lib/format';
 
@@ -63,17 +64,26 @@ function SectionError({ message, requestId }: { message: string; requestId: stri
 }
 
 export default function SymbolDetailPage({ params }: { params: { symbol: string } }) {
-  const C = useChartColors();
   const symbol = decodeURIComponent(params.symbol);
+  return (
+    <Loaded
+      fetcher={() => getSymbol(symbol)}
+      deps={[symbol]}
+      View={(p) => <SymbolDetailView {...p} symbol={symbol} />}
+    />
+  );
+}
+
+function SymbolDetailView({ data, env, symbol }: ViewProps<SymbolDetail> & { symbol: string }) {
+  const C = useChartColors();
 
   // Honest not-found: symBy falls back to SYMBOLS[0]; detect a genuine miss so
   // we render a calm "not found" state instead of silently showing another row.
   // (Hooks below run unconditionally on the fallback Sym; we gate only the JSX.)
   const notFound = !SYMBOLS.some((s) => s.symbol === symbol);
 
-  const env = getSymbol(symbol);
-  const { sym, idea } = env.data;
-  const stale = env.staleness_seconds > STALE_THRESHOLD_SECONDS;
+  const { sym, idea } = data;
+  const stale = (env.staleness_seconds ?? 0) > STALE_THRESHOLD_SECONDS;
   const symErr = env.errors.find((e) => e.field == null || e.field === 'symbol' || e.field === 'bars');
   const ideaErr = env.errors.find((e) => e.field === 'idea' || e.field === 'trade_idea');
 
@@ -86,23 +96,28 @@ export default function SymbolDetailPage({ params }: { params: { symbol: string 
   const line: Point[] = useMemo(() => candles.map((c, i) => ({ t: i, v: c.c })), [candles]);
   const net = line.length ? line[line.length - 1].v / line[0].v - 1 : 0;
 
-  // Real, persisted bar-level columns from the `bars` hypertable [LIVE].
+  // Real, persisted bar-level columns from the `bars` hypertable [LIVE]. The live
+  // BFF nulls `bar` entirely when the bars table is unreachable/empty for this
+  // symbol — guard every deref so the microstructure section degrades to a
+  // DataUnavailable affordance instead of crashing or fabricating zeros.
   const b = sym.bar;
-  const isDollar = b.barType === 'dollar';
-  const durSec = Math.round(b.barDurationSeconds);
+  const isDollar = b?.barType === 'dollar';
+  const durSec = b ? Math.round(b.barDurationSeconds) : 0;
   const durLabel = durSec >= 60 ? `${Math.floor(durSec / 60)}m ${durSec % 60}s` : `${durSec}s`;
-  const micro: { label: string; value: string; hint: string }[] = [
-    { label: 'VWAP', value: fmtPrice(b.vwap), hint: 'volume-weighted' },
-    { label: 'Dollar volume', value: fmtCompact(b.dollarVolume), hint: 'Σ price × size' },
-    { label: 'Tick count', value: fmtNum(b.tickCount, 0), hint: 'trades in bar' },
-    { label: 'Buy / sell vol', value: `${fmtCompact(b.buyVolume, '')} / ${fmtCompact(b.sellVolume, '')}`, hint: 'classified flow' },
-    { label: 'Volume imbalance', value: fmtCompact(b.volumeImbalance, ''), hint: 'buy − sell' },
-    { label: 'Tick imbalance', value: fmtPctSigned(b.tickImbalanceRatio, 1), hint: '(buy − sell ticks) / n' },
-    { label: 'Imbalance', value: fmtNum(b.imbalance, 0), hint: 'cumulative signed' },
-    { label: 'Threshold', value: isDollar ? fmtCompact(b.threshold) : fmtNum(b.threshold, 0), hint: isDollar ? '$ volume to close bar' : 'imbalance to close bar' },
-    { label: 'Bar duration', value: durLabel, hint: 'open → close' },
-    { label: 'Bar type', value: b.barType, hint: 'sampling scheme' },
-  ];
+  const micro: { label: string; value: string; hint: string }[] = b
+    ? [
+        { label: 'VWAP', value: fmtPrice(b.vwap), hint: 'volume-weighted' },
+        { label: 'Dollar volume', value: fmtCompact(b.dollarVolume), hint: 'Σ price × size' },
+        { label: 'Tick count', value: fmtNum(b.tickCount, 0), hint: 'trades in bar' },
+        { label: 'Buy / sell vol', value: `${fmtCompact(b.buyVolume, '')} / ${fmtCompact(b.sellVolume, '')}`, hint: 'classified flow' },
+        { label: 'Volume imbalance', value: fmtCompact(b.volumeImbalance, ''), hint: 'buy − sell' },
+        { label: 'Tick imbalance', value: fmtPctSigned(b.tickImbalanceRatio, 1), hint: '(buy − sell ticks) / n' },
+        { label: 'Imbalance', value: fmtNum(b.imbalance, 0), hint: 'cumulative signed' },
+        { label: 'Threshold', value: isDollar ? fmtCompact(b.threshold) : fmtNum(b.threshold, 0), hint: isDollar ? '$ volume to close bar' : 'imbalance to close bar' },
+        { label: 'Bar duration', value: durLabel, hint: 'open → close' },
+        { label: 'Bar type', value: b.barType, hint: 'sampling scheme' },
+      ]
+    : [];
 
   if (notFound) {
     return (
@@ -147,12 +162,12 @@ export default function SymbolDetailPage({ params }: { params: { symbol: string 
                 <span className="mono" style={{ fontWeight: 700, fontSize: 17, letterSpacing: '-0.01em' }}>{sym.symbol}</span>
                 <span className="chip" style={{ height: 22, fontSize: 11, textTransform: 'capitalize' }}>{sym.type}</span>
                 <span className="chip" style={{ height: 22, fontSize: 11 }}>
-                  <span className="dim">bar</span>&nbsp;<span className="mono">{b.barType}</span>
+                  <span className="dim">bar</span>&nbsp;<span className="mono">{b?.barType ?? '—'}</span>
                 </span>
                 {stale && (
                   <span
                     className="chip"
-                    title={`Snapshot is ${Math.round(env.staleness_seconds)}s old (> ${STALE_THRESHOLD_SECONDS}s). Showing last-good values while the engine refreshes.`}
+                    title={`Snapshot is ${Math.round(env.staleness_seconds ?? 0)}s old (> ${STALE_THRESHOLD_SECONDS}s). Showing last-good values while the engine refreshes.`}
                     style={{ height: 22, fontSize: 11, display: 'inline-flex', alignItems: 'center', gap: 5, color: C.warn, borderColor: `${C.warn}55` }}
                   >
                     <Icon name="refresh" size={11} /> Stale · refreshing
@@ -160,8 +175,8 @@ export default function SymbolDetailPage({ params }: { params: { symbol: string 
                 )}
               </div>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginTop: 8 }}>
-                <span className="num" style={{ fontSize: 34, fontWeight: 720, letterSpacing: '-0.03em' }}>{fmtPrice(sym.price)}</span>
-                <Delta value={sym.change1d} size={16} />
+                <span className="num" style={{ fontSize: 34, fontWeight: 720, letterSpacing: '-0.03em' }}>{sym.price == null ? '—' : fmtPrice(sym.price)}</span>
+                {sym.change1d != null && <Delta value={sym.change1d} size={16} />}
               </div>
               <div className="muted" style={{ fontSize: 13, marginTop: 2 }}>{sym.name}</div>
             </div>
@@ -175,6 +190,16 @@ export default function SymbolDetailPage({ params }: { params: { symbol: string 
         <div style={{ marginTop: 16 }}>
           {symErr ? (
             <SectionError message="Couldn't load bars. Retry." requestId={env.request_id} />
+          ) : candles.length === 0 ? (
+            <div style={{ height: 340, display: 'grid', placeItems: 'center' }}>
+              <ComingState
+                title="No bars persisted for this symbol yet"
+                unlock="The bars hypertable is empty/unreachable for this instrument, so the BFF returns no candle series. The chart lights up once bars land. Wave 4."
+                wave={4}
+                variant="deferred"
+                compact
+              />
+            </div>
           ) : view === 'candles' ? (
             <CandleChart candles={candles} height={340} />
           ) : (
@@ -185,13 +210,13 @@ export default function SymbolDetailPage({ params }: { params: { symbol: string 
         {/* Change strip */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', marginTop: 8, borderTop: '1px solid var(--border)', paddingTop: 14 }}>
           {([
-            ['1 week', <Delta key="1w" value={sym.change1w} dp={2} arrow={false} size={15} />],
-            ['1 month', <Delta key="1m" value={sym.change1m} dp={2} arrow={false} size={15} />],
-            ['YTD', <Delta key="ytd" value={sym.changeYtd} dp={2} arrow={false} size={15} />],
+            ['1 week', sym.change1w == null ? <span key="1w" className="dim" style={{ fontSize: 15 }}>—</span> : <Delta key="1w" value={sym.change1w} dp={2} arrow={false} size={15} />],
+            ['1 month', sym.change1m == null ? <span key="1m" className="dim" style={{ fontSize: 15 }}>—</span> : <Delta key="1m" value={sym.change1m} dp={2} arrow={false} size={15} />],
+            ['YTD', sym.changeYtd == null ? <span key="ytd" className="dim" style={{ fontSize: 15 }}>—</span> : <Delta key="ytd" value={sym.changeYtd} dp={2} arrow={false} size={15} />],
             [
               'Bar type',
               <span key="bartype" className="mono" style={{ fontSize: 15, fontWeight: 650, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                {sym.bar.barType}
+                {b?.barType ?? '—'}
                 <span
                   title={BAR_TYPE_INFO}
                   aria-label={BAR_TYPE_INFO}
@@ -215,8 +240,8 @@ export default function SymbolDetailPage({ params }: { params: { symbol: string 
                 </span>
               </span>,
             ],
-            ['Market cap', <span key="cap" className="num" style={{ fontSize: 15, fontWeight: 650 }}>{sym.marketCap ? fmtCompact(sym.marketCap) : '—'}</span>],
-            ['Volume', <span key="vol" className="num" style={{ fontSize: 15, fontWeight: 650 }}>{fmtCompact(sym.volume)}</span>],
+            ['Market cap', <span key="cap" className="num" style={{ fontSize: 15, fontWeight: 650 }}>{sym.marketCap == null ? '—' : fmtCompact(sym.marketCap)}</span>],
+            ['Volume', <span key="vol" className="num" style={{ fontSize: 15, fontWeight: 650 }}>{sym.volume == null ? '—' : fmtCompact(sym.volume)}</span>],
           ] as const).map(([label, node], i) => (
             <div key={label} style={{ paddingLeft: i ? 18 : 0, borderLeft: i ? '1px solid var(--border)' : 'none' }}>
               <div className="eyebrow">{label}</div>
@@ -301,16 +326,25 @@ export default function SymbolDetailPage({ params }: { params: { symbol: string 
       </div>
 
       {/* 4 — bar microstructure [LIVE] — real persisted columns */}
-      <Panel title="Bar microstructure" subtitle={`Persisted ${b.barType}-bar columns from the bars hypertable — live`}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 12 }}>
-          {micro.map((f) => (
-            <div key={f.label} style={{ background: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: 12, padding: 14 }}>
-              <div className="eyebrow">{f.label}</div>
-              <div className="num" style={{ fontSize: 19, fontWeight: 680, marginTop: 6 }}>{f.value}</div>
-              <div className="dim" style={{ fontSize: 11, marginTop: 3 }}>{f.hint}</div>
-            </div>
-          ))}
-        </div>
+      <Panel title="Bar microstructure" subtitle={b ? `Persisted ${b.barType}-bar columns from the bars hypertable — live` : 'Persisted bar columns from the bars hypertable'}>
+        {b ? (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 12 }}>
+            {micro.map((f) => (
+              <div key={f.label} style={{ background: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: 12, padding: 14 }}>
+                <div className="eyebrow">{f.label}</div>
+                <div className="num" style={{ fontSize: 19, fontWeight: 680, marginTop: 6 }}>{f.value}</div>
+                <div className="dim" style={{ fontSize: 11, marginTop: 3 }}>{f.hint}</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <ComingState
+            title="Bar microstructure unavailable for this symbol"
+            unlock="The bars hypertable is empty/unreachable for this instrument, so the BFF returns no bar-level columns. VWAP, classified flow, imbalance and threshold land here once bars are persisted. Wave 4."
+            wave={4}
+            variant="deferred"
+          />
+        )}
       </Panel>
 
       {/* 5 — live features (ephemeral Feature Factory) — coming */}
