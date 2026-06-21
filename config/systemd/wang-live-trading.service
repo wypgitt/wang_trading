@@ -14,6 +14,9 @@ WorkingDirectory=/opt/wang_trading
 EnvironmentFile=/opt/wang_trading/config/live_trading.env
 Environment="PYTHONPATH=/opt/wang_trading"
 Environment="KMP_DUPLICATE_LIB_OK=TRUE"
+# The live cycle publishes the read-only trade-ideas snapshot here (post-cycle
+# hook); the BFF reads the same path. Must match config/supervisor/bff.conf.
+Environment="WANG_TRADE_IDEAS_PATH=/run/wang/trade_ideas.json"
 
 ExecStartPre=/opt/wang_trading/venv/bin/python -m src.execution.preflight \
     --full-check --config /opt/wang_trading/config/live_trading.yaml
@@ -34,7 +37,11 @@ LimitNPROC=4096
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/wang_trading/logs /opt/wang_trading/data /var/log/wang_trading
+# /run/wang: the post-cycle hook writes the trade-ideas snapshot there. Under
+# ProtectSystem=strict the whole tree is read-only, so it must be listed. (It is
+# a tmpfs dir created by tmpfiles.d on boot — see scripts/deploy.sh.) PrivateTmp
+# only sandboxes /tmp, so it does not affect /run/wang.
+ReadWritePaths=/opt/wang_trading/logs /opt/wang_trading/data /var/log/wang_trading /run/wang
 PrivateTmp=true
 
 StandardOutput=append:/var/log/wang_trading/live_trading.out.log

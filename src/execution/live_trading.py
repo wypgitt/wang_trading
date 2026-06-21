@@ -734,6 +734,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Run live bootstrap with paper brokers and record would-be orders")
     p.add_argument("--rehearsal-record-path", type=str, default=None,
                    help="JSONL path for --paper-rehearsal order records")
+    p.add_argument("--no-publish-trade-ideas", action="store_true",
+                   help="Disable the post-cycle trade-ideas snapshot the BFF reads "
+                        "(on by default; the live cycle writes it from its own artifacts).")
     p.add_argument("--halt", action="store_true",
                    help="Write the live HALT sentinel and exit")
     p.add_argument("--halt-reason", type=str, default="operator_halt",
@@ -799,6 +802,20 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - glue only
         if args.revert_to_hrp:
             print(await ctx.pipeline.revert_to_hrp(args.revert_to_hrp))
             return 0
+        # Wire the read-only trade-ideas snapshot publisher: the LIVE cycle
+        # publishes the BFF's snapshot from the artifacts it already computed
+        # each tick (no separate shadow pipeline). The write is atomic + guarded,
+        # so it can never affect trading. Opt out with --no-publish-trade-ideas.
+        if not getattr(args, "no_publish_trade_ideas", False):
+            try:
+                from src.execution.trade_idea_publisher import TradeIdeaPublisher
+
+                _publisher = TradeIdeaPublisher(config_path=args.config)
+                ctx.pipeline.set_report_sink(_publisher.publish_report)
+                log.info("trade-ideas publish hook enabled path=%s", _publisher.output_path)
+            except Exception as exc:  # noqa: BLE001 — publishing is best-effort
+                log.warning("could not enable trade-ideas publish hook: %s", exc)
+
         await ctx.pipeline.startup_sequence()
         await ctx.pipeline.run(ctx.symbols)
         return 0

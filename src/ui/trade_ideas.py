@@ -216,6 +216,119 @@ def generate_trade_idea_report_sync(**kwargs: Any) -> TradeIdeaReport:
     return asyncio.run(generate_trade_idea_report(**kwargs))
 
 
+def build_report_from_cycle(
+    *,
+    symbols: list[str],
+    bars: dict[str, Any] | None,
+    features: pd.DataFrame | None,
+    signals: pd.DataFrame | None,
+    meta: pd.DataFrame | None,
+    bets: pd.DataFrame | None,
+    target: pd.DataFrame | None,
+    nav: float,
+    bar_type: str,
+    meta_pipeline: Any = None,
+    config_path: str | None = None,
+    min_abs_weight: float = 0.0025,
+    stage_latency_seconds: dict[str, float] | None = None,
+) -> TradeIdeaReport:
+    """Assemble a ``TradeIdeaReport`` from a LIVE cycle's already-computed panel
+    artifacts — the post-cycle publish hook (``PaperTradingPipeline.run_cycle``).
+
+    Reuses :func:`_idea_from_artifacts` (the same per-symbol assembly the
+    read-only rehearsal uses), so the published snapshot matches what the
+    rehearsal would produce WITHOUT re-running the pipeline — trade ideas are
+    computed exactly once, in the live cycle. ``bars`` here is the cycle's
+    ``{symbol: latest Bar}`` map (one bar/symbol), so ``bars_loaded`` reflects
+    the live streaming tick rather than a backfill of history.
+    """
+
+    model_source = _model_source(meta_pipeline)
+    feat = features if features is not None else pd.DataFrame()
+    sig = signals if signals is not None else pd.DataFrame()
+    met = meta if meta is not None else pd.DataFrame()
+    bet = bets if bets is not None else pd.DataFrame()
+    tgt = target if target is not None else pd.DataFrame()
+    latencies = dict(stage_latency_seconds or {})
+    clean_symbols = [str(s).strip().upper() for s in (symbols or []) if str(s).strip()]
+
+    ideas: list[TradeIdea] = []
+    for symbol in clean_symbols:
+        try:
+            ideas.append(
+                _idea_from_artifacts(
+                    symbol=symbol,
+                    bars=_bars_df_from_cycle(bars, symbol),
+                    features=feat,
+                    signals=sig,
+                    meta=met,
+                    bets=bet,
+                    target=tgt,
+                    nav=float(nav),
+                    min_abs_weight=float(min_abs_weight),
+                    model_source=model_source,
+                    stage_latency_seconds=latencies,
+                    errors=[],
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — one bad symbol must not drop the rest
+            ideas.append(
+                _empty_idea(
+                    symbol=symbol,
+                    action="ERROR",
+                    nav=float(nav),
+                    reason=f"Idea assembly failed: {exc}",
+                    stage_latency_seconds=latencies,
+                    errors=[str(exc)],
+                )
+            )
+
+    ideas.sort(key=_idea_sort_key)
+    mode = (
+        "paper_confidence_fallback"
+        if model_source == "confidence_fallback"
+        else "paper_production_live"
+    )
+    return TradeIdeaReport(
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        mode=mode,
+        config_path=str(config_path) if config_path is not None else None,
+        symbols=clean_symbols,
+        bar_type=str(bar_type),
+        nav=float(nav),
+        model_source=model_source,
+        live_orders_sent=0,
+        allow_confidence_fallback=False,
+        ideas=ideas,
+        warnings=[],
+        errors=[],
+        stage_latency_seconds=latencies,
+    )
+
+
+def _bars_df_from_cycle(bars: dict[str, Any] | None, symbol: str) -> pd.DataFrame:
+    """One-row bars frame (``close`` column + timestamp index) from the cycle's
+    latest ``Bar`` for ``symbol`` — matches what ``_latest_price`` /
+    ``_latest_bar_at`` read."""
+
+    if not bars:
+        return pd.DataFrame()
+    bar = bars.get(symbol) or bars.get(symbol.upper()) or bars.get(symbol.lower())
+    if bar is None:
+        return pd.DataFrame()
+    close = _optional_float(getattr(bar, "close", None))
+    if close is None:
+        return pd.DataFrame()
+    ts = getattr(bar, "timestamp", None) or getattr(bar, "open_time", None)
+    index = None
+    if ts is not None:
+        try:
+            index = pd.DatetimeIndex([pd.Timestamp(ts)])
+        except Exception:  # noqa: BLE001
+            index = None
+    return pd.DataFrame({"close": [close]}, index=index)
+
+
 async def _generate_symbol_idea(
     *,
     pipeline: Any,

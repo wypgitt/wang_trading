@@ -144,6 +144,21 @@ class PaperTradingPipeline:
         self._orders_filled_count = 0
         self._last_stage_latency_seconds: dict[str, float] = {}
         self._last_stage_cost_usd: dict[str, float] = {}
+        # Optional post-cycle hook: publish the read-only trade-ideas snapshot
+        # the BFF serves, from the artifacts this cycle just computed (no shadow
+        # pipeline). None by default → behaviour unchanged; the live runner sets
+        # it (set_report_sink) to TradeIdeaPublisher.publish_report.
+        self._report_sink: Any | None = None
+
+    def set_report_sink(self, sink: Any | None) -> None:
+        """Wire the post-cycle trade-ideas publish hook (or clear it with None).
+
+        ``sink`` is called once per cycle with a ``TradeIdeaReport`` built from
+        the cycle's in-memory artifacts. It runs inside a guard, so a publish
+        failure can never affect trading.
+        """
+
+        self._report_sink = sink
 
     # ── Core cycle ─────────────────────────────────────────────────────
 
@@ -296,6 +311,13 @@ class PaperTradingPipeline:
             len(summary.get("exits", [])),
         )
 
+        # 12. Publish the read-only trade-ideas snapshot the BFF serves, from
+        # THIS cycle's already-computed artifacts (no shadow pipeline). Guarded.
+        self._publish_trade_ideas(
+            bars=bars, features=features, signals=signals, meta=meta,
+            bet_sizes=bet_sizes, target=target, nav=pf.nav, prices=prices,
+        )
+
         return {
             "cycle": self.cycle_count,
             "nav": pf.nav,
@@ -307,6 +329,47 @@ class PaperTradingPipeline:
             "stage_latency_seconds": dict(self._last_stage_latency_seconds),
             "stage_cost_usd": dict(self._last_stage_cost_usd),
         }
+
+    def _publish_trade_ideas(
+        self,
+        *,
+        bars: dict[str, Any] | None,
+        features: pd.DataFrame | None,
+        signals: pd.DataFrame | None,
+        meta: pd.DataFrame | None,
+        bet_sizes: pd.DataFrame | None,
+        target: pd.DataFrame | None,
+        nav: float,
+        prices: dict[str, float] | None,
+    ) -> None:
+        """Build a TradeIdeaReport from this cycle's artifacts and hand it to the
+        report sink (the publisher). Fully guarded — a publish failure logs and
+        is swallowed so it can never affect trading."""
+
+        if self._report_sink is None:
+            return
+        try:
+            from src.ui.trade_ideas import build_report_from_cycle
+
+            symbols = list((bars or {}).keys()) or list((prices or {}).keys())
+            bar_type = str(getattr(getattr(self, "data_adapter", None), "bar_type", ""))
+            report = build_report_from_cycle(
+                symbols=symbols,
+                bars=bars,
+                features=features,
+                signals=signals,
+                meta=meta,
+                bets=bet_sizes,
+                target=target,
+                nav=float(nav),
+                bar_type=bar_type,
+                meta_pipeline=self.meta_pipeline,
+                config_path=getattr(self.config, "config_path", None),
+                stage_latency_seconds=dict(self._last_stage_latency_seconds),
+            )
+            self._report_sink(report)
+        except Exception as exc:  # noqa: BLE001 — never let publishing break trading
+            log.warning("trade-ideas publish hook failed: %s", exc)
 
     # ── Meta-label persistence (C4) ────────────────────────────────────
 

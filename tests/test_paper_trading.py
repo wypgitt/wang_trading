@@ -156,6 +156,33 @@ class TestSingleCycle:
         assert set(pf.positions.keys()) == {"AAPL", "TSLA"}
 
     @pytest.mark.asyncio
+    async def test_run_cycle_publishes_trade_ideas_via_sink(self):
+        # Phase-2 hook: a cycle with a report sink publishes a TradeIdeaReport
+        # built from the cycle's own artifacts (no shadow pipeline).
+        prices = {"AAPL": 100.0, "TSLA": 200.0}
+        target = pd.DataFrame([
+            {"symbol": "AAPL", "target_weight": 0.05, "strategy": "mom"},
+            {"symbol": "TSLA", "target_weight": 0.05, "strategy": "mom"},
+        ])
+        features = pd.DataFrame({"ret": [0.01, 0.02]})
+        pipeline, *_ = _make_pipeline(target=target, prices=prices)
+
+        captured: list = []
+        pipeline.set_report_sink(captured.append)
+        await pipeline.run_cycle(features=features, prices=prices)
+
+        assert len(captured) == 1, "the post-cycle hook must publish exactly once"
+        assert {i.symbol for i in captured[0].ideas} == {"AAPL", "TSLA"}
+
+    @pytest.mark.asyncio
+    async def test_run_cycle_without_sink_is_unchanged(self):
+        # No sink ⇒ no publish, no error (default behaviour preserved).
+        prices = {"AAPL": 100.0}
+        pipeline, *_ = _make_pipeline(prices=prices)
+        result = await pipeline.run_cycle(prices=prices)
+        assert result["cycle"] == 1  # still completes normally
+
+    @pytest.mark.asyncio
     async def test_metrics_updated_after_cycle(self):
         prices = {"AAPL": 100.0}
         target = pd.DataFrame([
