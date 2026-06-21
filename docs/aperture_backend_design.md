@@ -1442,3 +1442,54 @@ These are non-negotiable for the design phase. They restate the brief's §7 as b
 7. **Build wave-gated; never synthesize an absent field.** Wave 1 = #3, #4 (net-new on `bars`) plus the #1/#2 fixes and cheap real wins → Wave 2 = #5, #6, #7 (model-gated reads). Everything else stays `ComingState` until its named engine persistence gate lands. When data is absent the answer is always `null` + a `warning` — never a placeholder-as-number.
 
 > **Over-engineering to explicitly avoid (single-operator / single-tenant):** no Kubernetes, no service mesh, no multi-node, no Redis token-bucket rate limiting, no Redis/RQ job queues, no microservice split, no autoscaling. The single-process / 2-worker stance is correct. "Scalable" here means clean service boundaries (zero FastAPI imports in services, DTO returns, DI) so a *future* split is mechanical — not a current build target. Defer any process-split over gRPC/Unix-socket until profiling shows real contention, not preemptively.
+
+---
+
+## 11. Data flow & runtime services (engine → API)
+
+The 8-endpoint surface above is the *read* contract. This section is the *runtime*: how the engine's output reaches the BFF, and the processes that keep it flowing. Built + verified 2026-06-20. Right-sized for one host — **one atomic file + one DB, no message bus / Redis / queue**.
+
+### 11.1 Three data planes
+
+```
+                 ┌─────────────────────────── engine (writers) ──────────────────────────┐
+  Plane A ideas: live cycle (run_cycle) ──post-cycle hook──▶ trade_ideas.json (tmpfs, atomic)
+  Plane B bars:  data_ingestion runner ──insert_bars──────▶ TimescaleDB `bars` hypertable
+  Plane C model: retrain scheduler ──promote `production`──▶ MLflow registry
+                 └────────────────────────────────────────────────────────────────────────┘
+                                            │ read-only, never writes
+                 ┌──────────────────────────▼ BFF (src/web) ─────────────────────────────┐
+  Plane A read:  TradeIdeasService.read_snapshot  → /overview /trade-ideas  (sub-ms, tmpfs)
+  Plane B read:  BarsGateway (parameterized+LIMIT) → /markets /symbols       (~ms)
+  Plane C read:  ModelService (singleton registry + 60s TTL cache) → /model  (<5ms warm)
+                 └──────────────────────────┬────────────────────────────────────────────┘
+                                            ▼  ApiEnvelope<T>  →  frontend (live or mock)
+```
+
+### 11.2 Plane A — the trade-ideas bridge (primary + fallback)
+
+The snapshot is the BFF's primary read; keeping it fresh is the bridge.
+
+- **Primary — in-cycle post-cycle hook.** `PaperTradingPipeline.run_cycle` (step 12) builds a `TradeIdeaReport` from the artifacts it *already computed this tick* (`build_report_from_cycle` reuses the same `_idea_from_artifacts` assembly the read-only rehearsal uses) and hands it to a guarded `report_sink` = `TradeIdeaPublisher.publish_report`. Trade ideas are computed **exactly once**, in the live cycle. The write is atomic (`write → fsync → os.replace`); the hook is fully `try/except`-guarded so a publish failure can never affect trading. Wired in `live_trading.main` (opt out `--no-publish-trade-ideas`).
+- **Fallback — standalone publisher daemon** (`config/supervisor/trade_idea_publisher.conf`, `autostart=false`). Re-runs the read-only pipeline every 60s and writes the same file. For paper-only viewing when no live cycle is running. Must NOT run alongside the live cycle (double compute).
+
+The writer and reader agree on **one path** — `WANG_TRADE_IDEAS_PATH=/run/wang/trade_ideas.json` — set in the live-trading unit/conf and `bff.conf`. On reboot tmpfs is empty; `tmpfiles.d` recreates `/run/wang` and the next cycle republishes within one period (the BFF `/readyz` 503s honestly until then — no durable-disk mirror, the 90s self-heal is sufficient).
+
+### 11.3 Runtime services (supervisor)
+
+`scripts/deploy.sh` installs these (engine daemons + the bridge + the API):
+
+| Service | Role | autostart |
+|---|---|---|
+| `wang_live_trading` | the cycle — trades **and** publishes the snapshot (hook) | manual (post-preflight) |
+| `wang_data_ingestion` | Alpaca feed → `bars` hypertable (Plane B) | yes |
+| `wang_retrain_scheduler` | promote MLflow `production` model (Plane C) | yes |
+| `wang_bff` | read-only API (`uvicorn`, localhost, read-only DB role) | yes |
+| `wang_trade_idea_publisher` | snapshot **fallback** (paper-only) | **no** |
+
+The systemd live-trading unit is sandboxed (`ProtectSystem=strict`); `/run/wang` is in `ReadWritePaths` so the cycle can write the snapshot.
+
+### 11.4 Freshness SLO & low-latency
+
+- **Health split:** `/livez` (process up, always 200) · `/healthz` (200 + the freshness vector + envelope `source_freshness`) · `/readyz` (**503** when the snapshot is absent or stale > 90s — the bridge isn't delivering). Prometheus gauges `bff_snapshot_age_seconds` / `bff_last_bar_age_seconds` / `bff_model_loaded` (`-1` = unavailable, so a dead feed flat-lines and alerts).
+- **Latency budget held:** snapshot read **< 2 ms** (tmpfs is RAM); bars query **< 20 ms** (hypertable + bounded `LIMIT`, pooled connection); model card **< 5 ms warm** — the MLflow registry is built **once** and the result TTL-cached (`LRUTTLCache`), eliminating the ~1 s per-request round-trip.

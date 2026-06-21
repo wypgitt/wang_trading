@@ -137,6 +137,20 @@ class TradeIdeaPublisher:
             min_abs_weight=self.min_abs_weight,
             allow_confidence_fallback=self.allow_confidence_fallback,
         )
+        self.publish_report(report)
+        return report
+
+    def publish_report(self, report: Any) -> None:
+        """Atomically write an ALREADY-COMPUTED report to ``output_path``.
+
+        Decoupled from the pipeline run (``publish_once`` runs the pipeline,
+        this writes a report someone else computed) so the live engine cycle
+        can publish the snapshot from the artifacts it just computed this
+        tick — the post-cycle writer hook — instead of re-running the whole
+        pipeline in a parallel shadow process. The write is the same atomic
+        write→fsync→``os.replace`` either way, so readers never see a torn
+        document regardless of which path produced the report.
+        """
 
         payload = {
             # Bump when the on-disk snapshot shape changes. The BFF reader
@@ -164,7 +178,6 @@ class TradeIdeaPublisher:
             self.output_path,
             len(getattr(report, "ideas", []) or []),
         )
-        return report
 
     async def run(self) -> None:
         """Run an indefinite publish loop, one cycle per ``period_seconds``.

@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from .services.bars_gateway import BarsGateway
+from .services.health_service import HealthService
 from .services.markets_service import MarketsService
 from .services.model_service import ModelService
 from .services.preflight_service import PreflightService
@@ -56,6 +58,16 @@ def get_model_service() -> ModelService:
 
 
 @lru_cache(maxsize=1)
+def get_health_service() -> HealthService:
+    # Aggregates the freshness SLO from the singleton readers + a bars probe.
+    return HealthService(
+        ideas=get_trade_ideas_service(),
+        gateway=BarsGateway(),
+        model=get_model_service(),
+    )
+
+
+@lru_cache(maxsize=1)
 def get_regime_service() -> RegimeService:
     return RegimeService()
 
@@ -83,6 +95,7 @@ def reset_service_singletons() -> None:
     get_symbols_service.cache_clear()
     get_signals_service.cache_clear()
     get_model_service.cache_clear()
+    get_health_service.cache_clear()
     get_regime_service.cache_clear()
     get_scenario_service.cache_clear()
     get_replay_service.cache_clear()
@@ -90,6 +103,7 @@ def reset_service_singletons() -> None:
 
 
 __all__ = [
+    "get_health_service",
     "get_markets_service",
     "get_model_service",
     "get_preflight_service",

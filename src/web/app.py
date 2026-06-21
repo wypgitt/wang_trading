@@ -31,12 +31,16 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
 
-from .envelope import envelope
+from .deps import get_health_service
+from .envelope import ApiError, envelope
 from .errors import register_exception_handlers
+from .services.health_service import HealthService
 from .logging import (
     bind_request_context,
     reset_request_context,
@@ -154,12 +158,52 @@ register_exception_handlers(app)
 # ----------------------------------------------------------------------
 
 
+@app.get("/livez")
+def livez() -> dict:
+    """Liveness — the worker can serve a request. Always 200 unless dead."""
+    return envelope({"ok": True, "now": datetime.now(timezone.utc).isoformat()}, source="health")
+
+
 @app.get("/healthz")
-def healthz() -> dict:
+def healthz(health: HealthService = Depends(get_health_service)) -> dict:
+    """Liveness + the freshness vector (snapshot/bar age, model-loaded).
+
+    Always 200 — it reports freshness but does NOT gate on it; ``/readyz`` is
+    the gate. The freshness fields also ride in the envelope's
+    ``source_freshness`` so any client can surface staleness.
+    """
+    freshness = health.freshness()
+    source_freshness = {
+        k: v
+        for k, v in {
+            "snapshot": freshness.get("snapshot_age_seconds"),
+            "bars": freshness.get("last_bar_age_seconds"),
+        }.items()
+        if v is not None
+    }
     return envelope(
-        {"ok": True, "now": datetime.now(timezone.utc).isoformat()},
+        {"ok": True, **freshness},
         source="health",
+        source_freshness=source_freshness or None,
     )
+
+
+@app.get("/readyz")
+def readyz(health: HealthService = Depends(get_health_service)) -> Response:
+    """Readiness — is fresh engine data actually flowing?
+
+    503 when the trade-ideas snapshot is absent or stale past the threshold
+    (the engine bridge isn't delivering — publisher down or wedged). The BFF
+    stays *alive*; the orchestrator should hold traffic / alert on this.
+    """
+    ok, freshness = health.ready()
+    errors = (
+        []
+        if ok
+        else [ApiError(code="SNAPSHOT_UNAVAILABLE", message="no fresh trade-ideas snapshot")]
+    )
+    body = envelope({"ready": ok, **freshness}, source="health", errors=errors)
+    return JSONResponse(status_code=200 if ok else 503, content=jsonable_encoder(body))
 
 
 # Prometheus exposition. We expose the metrics two ways:

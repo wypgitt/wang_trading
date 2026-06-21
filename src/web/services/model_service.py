@@ -25,6 +25,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
+from ..cache import LRUTTLCache
 from ..dtos import (
     MetaProbBucket,
     ModelGates,
@@ -60,37 +61,67 @@ def _default_registry_factory():
 class ModelService:
     """Build the production meta-labeler card, degrading to all-null."""
 
+    # Cache keys (maxsize-1 cache, so the key is constant).
+    _KEY = "model_card"
+
     def __init__(
         self,
         *,
         registry_factory: Optional[Callable[[], Any]] = None,
         meta_probs_provider: Optional[Callable[[], list[float]]] = None,
         now_fn: Optional[Callable[[], datetime]] = None,
+        cache_ttl_seconds: float = 60.0,
+        error_ttl_seconds: float = 5.0,
     ) -> None:
         self._registry_factory = registry_factory or _default_registry_factory
         self._meta_probs_provider = meta_probs_provider or (lambda: [])
         self._now_fn = now_fn or (lambda: datetime.now(timezone.utc))
+        # The MLflow registry is built ONCE (the import + set_experiment cost
+        # ~1s) and reused; the result is memoised so the hot read is sub-ms.
+        # The retrain loop promotes at most hourly, so a 60s TTL still feels
+        # live; transient errors get a short TTL so they self-heal quickly.
+        self._registry: Any = None
+        self._ttl = float(cache_ttl_seconds)
+        self._error_ttl = float(error_ttl_seconds)
+        self._cache = LRUTTLCache(maxsize=1, ttl=self._ttl)
+
+    def _get_registry(self) -> Any:
+        """The single, reused MLflow registry (built lazily on first success)."""
+
+        if self._registry is None:
+            self._registry = self._registry_factory()
+        return self._registry
 
     def get_model(self) -> tuple[ModelResponse, list[str]]:
-        """Return ``(response, warnings)`` for the model card.
+        """Return ``(response, warnings)`` for the model card (TTL-cached).
 
         Degrades rather than raises:
         * registry construction / ``get_production_model`` failure
-          -> all-null card + ``'model registry unavailable'``.
+          -> all-null card + ``'model registry unavailable'`` (cached briefly).
         * no production model registered
           -> all-null card + ``'no production model registered'`` (the
           client's MODEL_REQUIRED state).
         """
 
+        cached = self._cache.get(self._KEY, default=None)
+        if cached is not None:
+            return cached
+        result, ttl = self._compute()
+        self._cache.set(self._KEY, result, ttl_seconds=ttl)
+        return result
+
+    def _compute(self) -> tuple[tuple[ModelResponse, list[str]], float]:
         try:
-            registry = self._registry_factory()
+            registry = self._get_registry()
             info = registry.get_production_model()
         except Exception as exc:  # noqa: BLE001 — degrade, never 500
             log.warning("model registry unavailable: %s", exc)
-            return ModelResponse(), ["model registry unavailable"]
+            # Reset so a transient construction failure is retried next time.
+            self._registry = None
+            return (ModelResponse(), ["model registry unavailable"]), self._error_ttl
 
         if info is None:
-            return ModelResponse(), ["no production model registered"]
+            return (ModelResponse(), ["no production model registered"]), self._ttl
 
         warnings: list[str] = [_NOT_PRODUCED]
 
@@ -129,7 +160,7 @@ class ModelService:
             drift=[],
             rl_shadow=None,
         )
-        return response, warnings
+        return (response, warnings), self._ttl
 
     # ── internals ─────────────────────────────────────────────────────
 

@@ -146,6 +146,29 @@ def test_default_output_path_uses_xdg_when_no_env(tmp_path, monkeypatch):
 # ── publish_once ──────────────────────────────────────────────────────
 
 
+def test_publish_report_writes_prebuilt_report_without_running_pipeline(tmp_path, monkeypatch):
+    # The post-cycle hook path: publish a report the engine already computed,
+    # WITHOUT invoking the generator (no shadow pipeline re-run).
+    import src.ui.trade_ideas as ti
+
+    def _boom(**kwargs):
+        raise AssertionError("publish_report must not run the pipeline")
+
+    monkeypatch.setattr(ti, "generate_trade_idea_report_sync", _boom, raising=False)
+
+    report = _FakeReport(ideas=[_FakeIdea(symbol="AAPL"), _FakeIdea(symbol="MSFT")])
+    output = tmp_path / "trade_ideas.json"
+    publisher = TradeIdeaPublisher(output_path=output)
+    publisher.publish_report(report)  # write-only, no generator call
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert set(payload.keys()) == {"schema_version", "as_of", "report"}
+    assert payload["schema_version"] == SNAPSHOT_SCHEMA_VERSION
+    assert [i["symbol"] for i in payload["report"]["ideas"]] == ["AAPL", "MSFT"]
+    # No torn writes: the .tmp sibling is gone after the atomic rename.
+    assert list(tmp_path.glob("trade_ideas.json.tmp")) == []
+
+
 def test_publish_once_writes_expected_json_shape(tmp_path, monkeypatch):
     report = _FakeReport(
         ideas=[

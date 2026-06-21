@@ -127,6 +127,33 @@ class BarsGateway:
             return None
         return self._db
 
+    def latest_bar_age_seconds(self) -> Optional[float]:
+        """Seconds since the most recent bar across the table — a freshness
+        probe for health checks. ``None`` when the DB is unreachable or empty
+        (the ingestion feed is down / not yet producing)."""
+
+        if self._fetch is not None:
+            # Test/override path has no real DB; treat as unknown.
+            return None
+        mgr = self._manager()
+        if mgr is None:
+            return None
+        try:
+            import pandas as pd
+            from datetime import datetime, timezone
+            from sqlalchemy import text
+
+            df = pd.read_sql(text("SELECT MAX(timestamp) AS ts FROM bars"), mgr.engine)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("bars gateway: latest-bar probe failed: %s", exc)
+            return None
+        if df is None or df.empty or df.iloc[0]["ts"] is None:
+            return None
+        ts = pd.to_datetime(df.iloc[0]["ts"], utc=True).to_pydatetime()
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - ts).total_seconds())
+
     def _db_recent_bars(
         self, symbol: str, bar_type: str, n: int
     ) -> Optional[list[dict[str, Any]]]:

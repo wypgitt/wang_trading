@@ -115,6 +115,26 @@ bff_upstream_errors_total: Counter = _get_or_create_counter(
     ("service", "code"),
 )
 
+# Freshness SLO gauges (the engine->BFF data-flow health). Set by the health
+# check; -1 encodes "unavailable" so a flat-line at -1 alerts on a dead feed.
+bff_snapshot_age_seconds: Gauge = _get_or_create_gauge(
+    "bff_snapshot_age_seconds",
+    "Age of the trade-ideas snapshot in seconds (engine->BFF freshness). -1 = no snapshot.",
+    (),
+)
+
+bff_last_bar_age_seconds: Gauge = _get_or_create_gauge(
+    "bff_last_bar_age_seconds",
+    "Age of the most recent bar in seconds. -1 = unavailable (ingestion down / empty).",
+    (),
+)
+
+bff_model_loaded: Gauge = _get_or_create_gauge(
+    "bff_model_loaded",
+    "1 if a production model is registered/loaded, else 0.",
+    (),
+)
+
 
 # ---- Route normalisation ----------------------------------------------
 
@@ -194,8 +214,11 @@ def instrument(app: Any) -> None:
 __all__ = [
     "bff_cache_hits_total",
     "bff_cache_misses_total",
+    "bff_last_bar_age_seconds",
+    "bff_model_loaded",
     "bff_request_duration_seconds",
     "bff_requests_total",
+    "bff_snapshot_age_seconds",
     "bff_sse_active_connections",
     "bff_sse_events_published_total",
     "bff_upstream_errors_total",

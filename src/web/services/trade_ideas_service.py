@@ -142,6 +142,32 @@ class TmpfsTradeIdeasCache:
             return None
         return response, staleness
 
+    def age_seconds(self) -> float | None:
+        """Lightweight freshness probe for health checks.
+
+        Reads + parses only the envelope's ``as_of`` (skips the full report
+        adaptation), so ``/healthz`` / ``/readyz`` stay cheap. Returns the
+        snapshot's age in seconds, or ``None`` when there is no readable
+        snapshot at all (missing / unparsable / no ``as_of``).
+        """
+
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        as_of_raw = payload.get("as_of")
+        if not as_of_raw:
+            return None
+        try:
+            as_of = datetime.fromisoformat(str(as_of_raw).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if as_of.tzinfo is None:
+            as_of = as_of.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - as_of).total_seconds())
+
 
 # ── Service ──────────────────────────────────────────
 
@@ -194,6 +220,11 @@ class TradeIdeasService:
             )
             response = _filter_response_by_symbols(response, normalised)
         return response, staleness
+
+    def snapshot_age_seconds(self) -> float | None:
+        """Snapshot freshness (seconds since ``as_of``) for health checks."""
+
+        return self._cache.age_seconds()
 
 
 # ── Adapters ──────────────────────────────────────────────────────────

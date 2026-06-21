@@ -85,11 +85,21 @@ install -m 0644 "${INSTALL_DIR}/config/systemd/wang-live-trading.service" \
     /etc/systemd/system/wang-live-trading.service
 systemctl daemon-reload
 
+# 7a. Snapshot dir for the engine->BFF bridge (tmpfs; publisher writes,
+#     BFF reads). systemd-tmpfiles recreates it on every boot so the path
+#     exists before the publisher starts (the publisher also mkdir's it).
+if [ -d /etc/tmpfiles.d ]; then
+    echo "d /run/wang 0750 wang wang -" >/etc/tmpfiles.d/wang_trading.conf
+    systemd-tmpfiles --create /etc/tmpfiles.d/wang_trading.conf || true
+fi
+
 # 7. Supervisor configs (optional — only if supervisor is installed)
 if command -v supervisorctl >/dev/null 2>&1; then
     echo "==> Installing supervisor configs"
     install -d /etc/supervisor/conf.d
-    for f in live_trading monitoring data_ingestion retrain_scheduler; do
+    # Engine daemons + the engine->BFF bridge (trade_idea_publisher) + the
+    # read-only API (bff). The publisher and bff MUST share WANG_TRADE_IDEAS_PATH.
+    for f in live_trading monitoring data_ingestion retrain_scheduler trade_idea_publisher bff; do
         install -m 0644 "${INSTALL_DIR}/config/supervisor/${f}.conf" \
             "/etc/supervisor/conf.d/wang_${f}.conf"
     done

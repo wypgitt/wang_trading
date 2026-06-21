@@ -145,6 +145,29 @@ def test_model_card_registry_unavailable(client):
     assert any("model registry unavailable" in w for w in body["warnings"])
 
 
+def test_model_card_registry_built_once_and_result_cached(client):
+    # Low-latency guarantee: the MLflow registry is constructed ONCE (the ~1s
+    # import) and the result is TTL-cached, so repeat reads don't re-query.
+    builds = {"n": 0}
+    gets = {"n": 0}
+
+    class _Spy:
+        def get_production_model(self):
+            gets["n"] += 1
+            return None  # honest no-model card
+
+    def _factory():
+        builds["n"] += 1
+        return _Spy()
+
+    _override(ModelService(registry_factory=_factory, cache_ttl_seconds=60.0))
+    resp1 = client.get("/api/v1/model")
+    resp2 = client.get("/api/v1/model")
+    assert resp1.status_code == 200 and resp2.status_code == 200
+    assert builds["n"] == 1, "registry must be built once (singleton), not per request"
+    assert gets["n"] == 1, "second read must hit the TTL cache, not re-query MLflow"
+
+
 def test_model_card_meta_prob_histogram(client):
     registry = _FakeRegistry(production=_production_info(None))
     service = ModelService(
